@@ -1,0 +1,1 @@
+from gym_airsim_multirotor.envs.airsim_multirotor_env import AirsimMultirotor
