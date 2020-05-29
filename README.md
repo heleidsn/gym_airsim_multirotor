@@ -1,5 +1,5 @@
 # gym_airsim_multirotor
-## description
+## Description
 gym_airsim_multirotor is a customized OpenAI gym environement for AimSim.
 
 ## Usage
