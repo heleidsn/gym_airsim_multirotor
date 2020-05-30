@@ -39,10 +39,8 @@ class AirsimMultirotor(gym.Env):
         self.min_distance_to_obstacles = 0
 
 
-    def read_config(self, file_name):
-        self.cfg = ConfigParser()
-        self.cfg.read(file_name)
-
+    def set_config(self, cfg):
+        self.cfg = cfg
         print(self.cfg.sections())
 
         # goal
