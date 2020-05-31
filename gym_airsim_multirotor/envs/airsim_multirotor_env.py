@@ -41,7 +41,12 @@ class AirsimMultirotor(gym.Env):
 
     def set_config(self, cfg):
         self.cfg = cfg
-        print(self.cfg.sections())
+
+        self.config_file_name = self.cfg.get('config', 'config_file_name')
+        print('Using config file: ', self.config_file_name)
+
+        # environment
+        self.max_episode_steps = cfg.getint('environment', 'max_episode_steps')
 
         # goal
         self.goal_distance = self.cfg.getint('goal', 'goal_distance')
@@ -58,6 +63,8 @@ class AirsimMultirotor(gym.Env):
         # input image
         self.screen_height = self.cfg.getint('input_image', 'image_height')
         self.screen_width = self.cfg.getint('input_image', 'image_width')
+        self.fov_h_degrees = self.cfg.getint('input_image', 'fov_horizontal_degrees')
+        self.fov_v_degrees = self.cfg.getint('input_image', 'fov_vertical_degrees')
 
         # control
         self.time_for_control_second = self.cfg.getfloat('control', 'control_time_interval')
@@ -68,7 +75,10 @@ class AirsimMultirotor(gym.Env):
         self.distance_to_obstacles_accept = self.cfg.getint('control', 'distance_to_obstacles_accept')
         self.distance_to_obstacles_punishment = self.cfg.getint('control', 'distance_to_obstacles_punishment')
 
-        self.navigation_3d = self.cfg.getboolean('navigation', 'navigation_3d')
+        self.debug_mode = self.cfg.getboolean('control', 'debug_mode')
+
+        self.navigation_3d = self.cfg.getboolean('config', 'navigation_3d')
+
 
         # observation and action space
         self.observation_space = spaces.Box(low=0, high=255, \
@@ -93,6 +103,9 @@ class AirsimMultirotor(gym.Env):
 
     def step(self, action):
         self._set_action(action)
+        self.step_num += 1
+        self.total_step += 1
+        
         obs = self._get_obs()
         done = self._is_done(obs)
         info = {
@@ -100,10 +113,12 @@ class AirsimMultirotor(gym.Env):
             'is_crash': self.is_crashed() or not self.is_inside_workspace(),
             'step_num': self.step_num
         }
-        reward, reward_split = self._compute_reward(obs, done, action)
+        if self.navigation_3d:
+            reward, reward_split = self._compute_reward_3d(obs, done, action)
+        else:
+            reward, reward_split = self._compute_reward(obs, done, action)
+
         self.cumulated_episode_reward += reward
-        self.step_num += 1
-        self.total_step += 1
         self.info_display(action, obs, done, reward)
 
         self.last_obs = obs
@@ -191,36 +206,24 @@ class AirsimMultirotor(gym.Env):
 
         # get actions
         target_forward_speed = float(action[0])
-        # target_forward_speed = 0
         yaw_rate = float(action[-1])
+
+        # add FoV speed constraint
+        speed_scale = (self.fov_h_degrees - 2*math.degrees(abs(yaw_rate))) / self.fov_h_degrees
+        speed_scale = max(0, speed_scale)
+        if self.debug_mode:
+            print('[_set_action]', 'yaw_rate_cmd: ', yaw_rate, 'speed_scale:', speed_scale)
         
         # get current states
         current_yaw = self.get_current_attitude_radian()[2]
         yaw_setpoint = current_yaw + yaw_rate
 
         # transfer dx dy from body frame to local frame
-        vx_body = target_forward_speed
+        vx_body = target_forward_speed * speed_scale
         vy_body = 0
         vz_body =  float(action[1])
         vx_local, vy_local = self.point_transfer(vx_body, vy_body, -yaw_setpoint)
-
-        # get current position and target position
-        # current_pose = self.get_current_pose()
-        # pose_setpoint_x = current_pose[0] + dx_local
-        # pose_setpoint_y = current_pose[1] + dy_local
-        # pose_setpoint_z = self.takeoff_hight
-        
-        # print(target_forward_speed, math.degrees(yaw_setpoint))
-        # set actions
-        # self.client.moveToPositionAsync(pose_setpoint_x, pose_setpoint_y, -pose_setpoint_z,
-        #                                 target_forward_speed,
-        #                                 timeout_sec=self.time_for_control_second,
-        #                                 drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
-        #                                 yaw_mode=airsim.YawMode(False, yaw_setpoint)).join()
-
-        # self.client.moveByVelocityZAsync(vx_local, vy_local, -self.takeoff_hight, self.time_for_control_second,
-        #                                 drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
-        #                                 yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(yaw_rate))).join()                    
+                 
         if self.navigation_3d:
             self.client.moveByVelocityAsync(vx_local, vy_local, -vz_body, self.time_for_control_second,
                                             drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
@@ -249,7 +252,8 @@ class AirsimMultirotor(gym.Env):
         # We see if we are outside the Learning Space
         episode_done = not(is_inside_workspace_now) or\
                         has_reached_des_pose or\
-                        too_close_to_obstable
+                        too_close_to_obstable or\
+                        self.step_num >= self.max_episode_steps
     
         return episode_done
 
@@ -303,6 +307,70 @@ class AirsimMultirotor(gym.Env):
                 reward = reward_crash
                 reward_split = [0, -10, -10]
                 # reward_split = [reward, -10, 0]
+
+        return reward, reward_split
+
+    def _compute_reward_3d(self, obs, done, action):
+        '''
+        reward consists of:
+            1. sparse part: reach, crash, step punishment
+            2. continuous part: 
+                distance to reward
+                distance to obstacle punishment
+        '''
+        reward = 0
+        reward_split = [0, 0, 0]
+
+        # reward_reach = 10
+        reward_reach = 10
+        reward_crash = -10
+        # reward_crash = -10
+        reward_coeff_distance = 20
+        reward_coeff_obstacle_distance = 0.5  # set punishment for too close to the obstacles
+        # reward_step_punishment = 0.05
+        # get distance from goal position
+        current_pose = self.get_current_pose()
+        distance_now = self.get_distance_from_desired_point(current_pose)
+
+        if not done:
+            # normalized distance to goal reward  
+            reward_distance = (self.previous_distance_from_des_point - distance_now) / self.goal_distance * reward_coeff_distance
+
+            # distance to obstacle cost
+            reward_obs = 0
+            if self.min_distance_to_obstacles < self.distance_to_obstacles_punishment:
+                reward_obs = reward_coeff_obstacle_distance * (self.min_distance_to_obstacles-self.distance_to_obstacles_punishment) \
+                         / (self.distance_to_obstacles_accept - self.distance_to_obstacles_punishment)
+
+            # step punishment
+            # reward = reward_distance - reward_obs - reward_step_punishment
+
+            # action cost
+            action_cost = 0
+
+            if action[1] < 0:
+                vertical_speed_cost = 0.1 * abs(action[1]) / self.vertical_speed_max
+            else:
+                vertical_speed_cost = 0.05 * abs(action[1]) / self.vertical_speed_max
+
+            yaw_speed_cost = 0.05 * abs(action[2]) / self.rotate_speed_max
+            action_cost = vertical_speed_cost + yaw_speed_cost
+
+            reward = reward_distance - reward_obs - action_cost
+
+            self.previous_distance_from_des_point = distance_now
+            reward_split = [reward_distance, -reward_obs, reward]
+        else:
+            if self.is_in_desired_pose():
+                reward = reward_reach
+                reward_split = [10, 0, 10]
+            if self.is_crashed():
+                reward = reward_crash
+                reward_split = [0, -10, -10]
+
+        if self.debug_mode:
+            print('action: {:.4f} {:.4f} {:.4f}'.format(action[0], action[1], action[2]))
+            print('reward:{:.4f} action_cost:{:.4f} vertical_speed_cost:{:.4f}'.format(reward, action_cost, vertical_speed_cost))
 
         return reward, reward_split
 
