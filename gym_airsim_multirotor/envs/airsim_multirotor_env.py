@@ -1,3 +1,11 @@
+'''
+@Author: Lei He
+@Date: 2020-05-29 16:54:52
+@LastEditTime: 2020-06-01 15:03:20
+@FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
+@Description: Gym like environemnt for AirSim. Using for 3D navigation.
+@Github: https://github.com/heleidsn
+'''
 import math
 import time
 
@@ -40,44 +48,54 @@ class AirsimMultirotor(gym.Env):
 
 
     def set_config(self, cfg):
-        self.cfg = cfg
 
-        self.config_file_name = self.cfg.get('config', 'config_file_name')
+        self.config_file_name = cfg.get('config', 'config_file_name')
         print('Using config file: ', self.config_file_name)
+
+        # config
+        self.reward_decompose = cfg.getboolean('config', 'reward_decompose')
 
         # environment
         self.max_episode_steps = cfg.getint('environment', 'max_episode_steps')
 
+        # uav_model
+        self.acc_lim_x = cfg.getfloat('uav_model', 'acc_lim_x')
+        self.acc_lim_z = cfg.getfloat('uav_model', 'acc_lim_z')
+        self.acc_lim_yaw_rad = math.radians(cfg.getfloat('uav_model', 'acc_lim_yaw_deg'))
+
+        self.max_vel_x = cfg.getfloat('uav_model', 'max_vel_x')
+        self.min_vel_x = cfg.getfloat('uav_model', 'min_vel_x')
+        self.max_vel_z = cfg.getfloat('uav_model', 'max_vel_z')
+        self.max_vel_yaw_rad = math.radians(cfg.getfloat('uav_model', 'max_vel_yaw_deg'))
+
         # goal
-        self.goal_distance = self.cfg.getint('goal', 'goal_distance')
-        self.goal_angle_noise_degree = self.cfg.getint('goal', 'goal_angle_noise_degree')
+        self.goal_distance = cfg.getint('goal', 'goal_distance')
+        self.goal_angle_noise_degree = cfg.getint('goal', 'goal_angle_noise_degree')
         
         # work space
-        self.work_space_xy_max = self.goal_distance + self.cfg.getint('work_space', 'work_space_xy_padding')
-        self.work_space_z_max = self.cfg.getint('work_space', 'work_space_z_max')
-        self.work_space_z_min = self.cfg.getint('work_space', 'work_space_z_min')
+        self.work_space_xy_max = self.goal_distance + cfg.getint('work_space', 'work_space_xy_padding')
+        self.work_space_z_max = cfg.getint('work_space', 'work_space_z_max')
+        self.work_space_z_min = cfg.getint('work_space', 'work_space_z_min')
 
-        self.takeoff_hight = self.cfg.getint('control', 'takeoff_hight')
-        self.accept_radius = self.cfg.getint('goal', 'goal_accept_radius')
+        self.takeoff_hight = cfg.getint('control', 'takeoff_hight')
+        self.accept_radius = cfg.getint('goal', 'goal_accept_radius')
 
         # input image
-        self.screen_height = self.cfg.getint('input_image', 'image_height')
-        self.screen_width = self.cfg.getint('input_image', 'image_width')
-        self.fov_h_degrees = self.cfg.getint('input_image', 'fov_horizontal_degrees')
-        self.fov_v_degrees = self.cfg.getint('input_image', 'fov_vertical_degrees')
+        self.screen_height = cfg.getint('input_image', 'image_height')
+        self.screen_width = cfg.getint('input_image', 'image_width')
+        self.fov_h_degrees = cfg.getint('input_image', 'fov_horizontal_degrees')
+        self.fov_v_degrees = cfg.getint('input_image', 'fov_vertical_degrees')
 
         # control
-        self.time_for_control_second = self.cfg.getfloat('control', 'control_time_interval')
-        self.forward_speed_max = self.cfg.getfloat('control', 'forward_speed_max')
-        self.vertical_speed_max = self.cfg.getfloat('control', 'vertical_speed_max')
-        self.max_vertical_difference = self.cfg.getfloat('control', 'max_vertical_difference')
-        self.rotate_speed_max = math.radians(self.cfg.getfloat('control', 'rotate_speed_max_degrees'))
-        self.distance_to_obstacles_accept = self.cfg.getint('control', 'distance_to_obstacles_accept')
-        self.distance_to_obstacles_punishment = self.cfg.getint('control', 'distance_to_obstacles_punishment')
+        self.time_for_control_second = cfg.getfloat('control', 'control_time_interval')
+        self.max_vertical_difference = cfg.getfloat('control', 'max_vertical_difference')
+        self.rotate_speed_max = math.radians(cfg.getfloat('control', 'rotate_speed_max_degrees'))
+        self.distance_to_obstacles_accept = cfg.getint('control', 'distance_to_obstacles_accept')
+        self.distance_to_obstacles_punishment = cfg.getint('control', 'distance_to_obstacles_punishment')
 
-        self.debug_mode = self.cfg.getboolean('control', 'debug_mode')
+        self.debug_mode = cfg.getboolean('control', 'debug_mode')
 
-        self.navigation_3d = self.cfg.getboolean('config', 'navigation_3d')
+        self.navigation_3d = cfg.getboolean('config', 'navigation_3d')
 
 
         # observation and action space
@@ -86,26 +104,32 @@ class AirsimMultirotor(gym.Env):
                                             dtype=np.uint8)
  
         if self.navigation_3d:
-            self.state_feature_lenght = 3
+            self.state_feature_lenght = 6
             self.state_raw = np.zeros(self.state_feature_lenght)
             self.state_norm  = np.zeros(self.state_feature_lenght)
-            self.action_space = spaces.Box(low=np.array([0, -self.vertical_speed_max, -self.rotate_speed_max]), \
-                                        high=np.array([self.forward_speed_max, self.vertical_speed_max, self.rotate_speed_max]), \
+            self.action_space = spaces.Box(low=np.array([self.min_vel_x , -self.max_vel_z, -self.max_vel_yaw_rad]), \
+                                        high=np.array([self.max_vel_x, self.max_vel_z, self.max_vel_yaw_rad]), \
                                         dtype=np.float32)
         else:
             self.state_feature_lenght = 4
             self.state_raw = np.zeros(self.state_feature_lenght)
             self.state_norm = np.zeros(self.state_feature_lenght)
-            self.action_space = spaces.Box(low=np.array([0.5, -self.rotate_speed_max]), \
-                                        high=np.array([self.forward_speed_max, self.rotate_speed_max]), \
+            self.action_space = spaces.Box(low=np.array([self.min_vel_x , -self.max_vel_yaw_rad]), \
+                                        high=np.array([self.max_vel_x, self.max_vel_yaw_rad]), \
                                         dtype=np.float32)
 
 
     def step(self, action):
-        self._set_action(action)
+        # set action
+        if self.navigation_3d:
+            self._set_action_3d(action)
+        else:
+            self._set_action_2d(action)
+
         self.step_num += 1
         self.total_step += 1
         
+        # get observation
         obs = self._get_obs()
         done = self._is_done(obs)
         info = {
@@ -123,7 +147,10 @@ class AirsimMultirotor(gym.Env):
 
         self.last_obs = obs
 
-        return obs, reward, done, info, reward_split
+        if self.reward_decompose:
+            return obs, reward, done, info, reward_split
+        else:
+            return obs, reward, done, info      
 
     def reset(self):
         self._reset_sim()
@@ -175,9 +202,8 @@ class AirsimMultirotor(gym.Env):
         @param {type}
         @return:
         '''
-        # observation include two parts: 
-        # 1. current depth image 0-255 uint8 
-        # 2. current state (position, goal_pose, velocity)
+        # 1. get current depth image 0-255 uint8 
+        
         image = self.get_depth_image()
         image_scaled = image * 100
         self.min_distance_to_obstacles = image_scaled.min()
@@ -188,20 +214,85 @@ class AirsimMultirotor(gym.Env):
         # image_uint8 = image_uint8.reshape(self.screen_height, self.screen_width, 1)
         state_feature_array = np.zeros((self.screen_height, self.screen_width))
 
-
+        # 2. get current state (position, goal_pose, velocity)
         state_feature = self._get_state_feature()
 
         assert (self.state_feature_lenght == state_feature.shape[0]), 'state_lenght {0} is not equal to state_feature_length {1}' \
                                                                     .format(self.state_feature_lenght, state_feature.shape[0])
         state_feature_array[0, 0:self.state_feature_lenght] = state_feature
 
+        # 3. generate image with state
         image_with_state = np.array([image_uint8, state_feature_array])
         image_with_state = image_with_state.swapaxes(0, 2)
         image_with_state = image_with_state.swapaxes(0, 1)
         
         return image_with_state
 
-    def _set_action(self, action):
+    def _set_action_3d(self, action):
+        '''
+        @description: set action for 3D navigation
+        @param {type}:  action[0]: forward velocity
+                        action[1]: vertical velocity
+                        action[2]: yaw velocity
+        @return: 
+        '''
+        self.client.simPause(False)
+
+        # get actions
+        cmd_vel_x = float(action[0])
+        cmd_vel_z = float(action[1])
+        cmd_yaw_rate = float(action[2])
+        
+        # get current state
+        current_vel_x = self.state_raw[3]
+        current_vel_z = self.state_raw[4]
+        current_vel_yaw = self.state_raw[5]
+
+        current_yaw = self.get_current_attitude_radian()[2]
+
+        # acc limitation
+        vel_x_range = np.array([current_vel_x - self.acc_lim_x * self.time_for_control_second, current_vel_x + self.acc_lim_x * self.time_for_control_second])
+        vel_z_range = np.array([current_vel_z - self.acc_lim_z * self.time_for_control_second, current_vel_z + self.acc_lim_z * self.time_for_control_second])
+        vel_yaw_range = np.array([current_vel_yaw - self.acc_lim_yaw_rad * self.time_for_control_second, current_vel_yaw + self.acc_lim_yaw_rad * self.time_for_control_second])
+        cmd_vel_x_new = np.clip(cmd_vel_x, vel_x_range[0], vel_x_range[1])
+        cmd_vel_z_new = np.clip(cmd_vel_z, vel_z_range[0], vel_z_range[1])
+        cmd_yaw_rate_new = np.clip(cmd_yaw_rate, vel_yaw_range[0], vel_yaw_range[1])
+
+        # velocity limitation
+        cmd_vel_x_final = np.clip(cmd_vel_x_new, self.min_vel_x, self.max_vel_x)
+        cmd_vel_z_final = np.clip(cmd_vel_z_new, -self.max_vel_z, self.max_vel_z)
+        cmd_yaw_rate_final = np.clip(cmd_yaw_rate_new, -self.max_vel_yaw_rad, self.max_vel_yaw_rad)
+
+        '''
+        # FoV limitation
+        speed_scale = (self.fov_h_degrees - 2*math.degrees(abs(yaw_rate))) / self.fov_h_degrees
+        speed_scale = max(0, speed_scale)
+        speed_scale = 1
+        if self.debug_mode:
+            print('[_set_action]', 'yaw_rate_cmd: ', yaw_rate, 'speed_scale:', speed_scale) 
+        '''
+        
+        # transfer dx dy from body frame to local frame
+        vx_body = cmd_vel_x_final
+        vy_body = 0
+        vz_body =  cmd_vel_z_final
+        vx_local, vy_local = self.point_transfer(vx_body, vy_body, -current_yaw)
+
+        # set 3d navigation action      
+        self.client.moveByVelocityAsync(vx_local, vy_local, -vz_body, self.time_for_control_second,
+                                            drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
+                                            yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(cmd_yaw_rate_final))).join()
+                          
+        self.client.simPause(True)
+
+    def _set_action_2d(self, action):
+        '''
+        @description: set action to airsim client
+        @param {type}:
+            action[0]: forward velocity
+            action[1]: yaw angular velocity
+        @return: None
+        '''
         self.client.simPause(False)
 
         # get actions
@@ -211,6 +302,7 @@ class AirsimMultirotor(gym.Env):
         # add FoV speed constraint
         speed_scale = (self.fov_h_degrees - 2*math.degrees(abs(yaw_rate))) / self.fov_h_degrees
         speed_scale = max(0, speed_scale)
+        speed_scale = 1
         if self.debug_mode:
             print('[_set_action]', 'yaw_rate_cmd: ', yaw_rate, 'speed_scale:', speed_scale)
         
@@ -221,15 +313,10 @@ class AirsimMultirotor(gym.Env):
         # transfer dx dy from body frame to local frame
         vx_body = target_forward_speed * speed_scale
         vy_body = 0
-        vz_body =  float(action[1])
         vx_local, vy_local = self.point_transfer(vx_body, vy_body, -yaw_setpoint)
                  
-        if self.navigation_3d:
-            self.client.moveByVelocityAsync(vx_local, vy_local, -vz_body, self.time_for_control_second,
-                                            drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
-                                            yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(yaw_rate))).join()
-        else:
-            self.client.moveByVelocityZAsync(vx_local, vy_local, -self.takeoff_hight, self.time_for_control_second,
+        # set 2d navigation action
+        self.client.moveByVelocityZAsync(vx_local, vy_local, -self.takeoff_hight, self.time_for_control_second,
                                              drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
                                              yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(yaw_rate))).join()                    
 
@@ -349,11 +436,11 @@ class AirsimMultirotor(gym.Env):
             action_cost = 0
 
             if action[1] < 0:
-                vertical_speed_cost = 0.1 * abs(action[1]) / self.vertical_speed_max
+                vertical_speed_cost = 0.1 * abs(action[1]) / self.max_vel_z
             else:
-                vertical_speed_cost = 0.05 * abs(action[1]) / self.vertical_speed_max
+                vertical_speed_cost = 0.05 * abs(action[1]) / self.max_vel_z
 
-            yaw_speed_cost = 0.05 * abs(action[2]) / self.rotate_speed_max
+            yaw_speed_cost = 0.2 * abs(action[2]) / self.max_vel_yaw_rad
             action_cost = vertical_speed_cost + yaw_speed_cost
 
             reward = reward_distance - reward_obs - action_cost
@@ -378,11 +465,17 @@ class AirsimMultirotor(gym.Env):
         self.goal_position = np.array([goal_x, goal_y, goal_z])
 
     def _get_state_feature(self):
+        '''
+        @description: update and get current uav state and state_norm 
+        @param {type} 
+        @return: state_norm
+                    normalized state range 0-255
+        '''
         current_pose = self.get_current_pose()
         distance = self.get_distance_from_desired_point(current_pose)
         relative_yaw = self._get_ralative_yaw(current_pose, self.goal_position)
 
-        relative_pose_z = self.goal_position[2] + current_pose[2]  # current position z is negative
+        relative_pose_z = -(self.goal_position[2] + current_pose[2])  # current position z is negative
         vertical_distance_norm = (relative_pose_z / self.max_vertical_difference / 2 + 0.5) * 255
 
         distance_norm = distance / self.goal_distance * 255
@@ -393,18 +486,23 @@ class AirsimMultirotor(gym.Env):
         linear_velocity = groudtruth.linear_velocity
         angular_velocity = groudtruth.angular_velocity
         linear_velocity_xy = math.sqrt(linear_velocity.x_val ** 2 + linear_velocity.y_val ** 2)
-        linear_velocity_norm = linear_velocity_xy / self.forward_speed_max * 255
-        angular_velocity_norm = (angular_velocity.z_val / self.rotate_speed_max / 2 + 0.5) * 255
+        linear_velocity_norm = linear_velocity_xy / self.max_vel_x * 255
+        linear_velocity_z = linear_velocity.z_val
+        linear_velocity_z_norm = (linear_velocity_z / self.max_vel_z / 2 + 0.5) * 255
+        angular_velocity_norm = (angular_velocity.z_val / self.max_vel_yaw_rad / 2 + 0.5) * 255
 
         if self.navigation_3d:
-            state_norm = np.array([distance_norm, vertical_distance_norm, relative_yaw_norm])
+            # state: distance_h, distance_v, relative yaw, velocity_x, velocity_z, velocity_yaw
+            self.state_raw = np.array([distance, relative_pose_z, relative_yaw, linear_velocity_xy, linear_velocity_z, angular_velocity.z_val])
+            state_norm = np.array([distance_norm, vertical_distance_norm, relative_yaw_norm, linear_velocity_norm, linear_velocity_z_norm, angular_velocity_norm])
+            state_norm = np.clip(state_norm, 0, 255)
+            self.state_norm = state_norm
         else:
+            self.state_raw = np.array([distance, relative_yaw, linear_velocity_xy, angular_velocity.z_val])
             state_norm = np.array([distance_norm, relative_yaw_norm, linear_velocity_norm, angular_velocity_norm])
-
-        state_norm = np.clip(state_norm, 0, 255)
-        self.state_norm = state_norm
-        self.state_raw = np.array([distance, math.degrees(relative_yaw), linear_velocity.x_val, math.degrees(angular_velocity.z_val)])
-
+            state_norm = np.clip(state_norm, 0, 255)
+            self.state_norm = state_norm
+    
         return state_norm
         
 
@@ -465,6 +563,11 @@ class AirsimMultirotor(gym.Env):
 
 
     def _get_ralative_yaw(self, current_pose, goal_pose):
+        '''
+        @description: get relative yaw from current pose to goal in radian
+        @param {type} 
+        @return: 
+        '''
         # get relative angle
         relative_pose_x = goal_pose[0] - current_pose[0]
         relative_pose_y = goal_pose[1] - current_pose[1]
