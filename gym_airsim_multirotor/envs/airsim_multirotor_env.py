@@ -1,13 +1,14 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-06-01 15:03:20
+@LastEditTime: 2020-06-02 20:10:15
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
 '''
 import math
 import time
+import keyboard
 
 import airsim
 import cv2
@@ -16,14 +17,24 @@ import numpy as np
 
 from configparser import ConfigParser
 
-import gym
 from gym import error, spaces, utils
 from gym.utils import seeding
 
-class AirsimMultirotor(gym.Env):
+from PyQt5 import QtCore
+from PyQt5.QtCore import pyqtSignal
+
+class AirsimMultirotor(gym.Env, QtCore.QThread):
     # metadata = {'render.modes': ['human']}
+    action_signal = pyqtSignal(int, np.ndarray, np.ndarray, np.ndarray) # vel_x, vel_z, vel_yaw
+    state_signal = pyqtSignal(int, np.ndarray) # state_raw
+    state_norm_signal = pyqtSignal(int, np.ndarray)
+    reward_signal = pyqtSignal(int, float, float) # step_reward, total_reward
+    depth_image_signal = pyqtSignal(np.ndarray) # depth_image
+    feature_signal = pyqtSignal(np.ndarray)
+
     def __init__(self):
-        print('init AirsimMultirotor')
+        super(AirsimMultirotor, self).__init__()
+        print('init AirsimMultirotor environment')
 
         # init airsim client
         self.client = airsim.MultirotorClient()
@@ -38,6 +49,7 @@ class AirsimMultirotor(gym.Env):
         self.cumulated_episode_reward = 0
         self.last_obs = 0
         self.previous_distance_from_des_point = 0
+        self.feature_before_fc = 0
 
         # uav state
         self.goal_position = np.zeros(3)
@@ -45,6 +57,8 @@ class AirsimMultirotor(gym.Env):
         self.state_current_attitude = np.zeros(3)
         self.state_current_velocity = np.zeros(3)
         self.min_distance_to_obstacles = 0
+        self.vel_cmd_final = np.zeros(3)
+        print('finish init environment')
 
 
     def set_config(self, cfg):
@@ -54,6 +68,7 @@ class AirsimMultirotor(gym.Env):
 
         # config
         self.reward_decompose = cfg.getboolean('config', 'reward_decompose')
+        self.keyboard_debug = cfg.getboolean('config', 'keyboard_debug')
 
         # environment
         self.max_episode_steps = cfg.getint('environment', 'max_episode_steps')
@@ -67,6 +82,13 @@ class AirsimMultirotor(gym.Env):
         self.min_vel_x = cfg.getfloat('uav_model', 'min_vel_x')
         self.max_vel_z = cfg.getfloat('uav_model', 'max_vel_z')
         self.max_vel_yaw_rad = math.radians(cfg.getfloat('uav_model', 'max_vel_yaw_deg'))
+
+        # reward
+        self.reward_coeff_obstacle_distance = cfg.getfloat('reward', 'reward_coeff_obstacle_distance')
+        self.reward_coeff_action_cost = cfg.getfloat('reward', 'reward_coeff_action_cost')
+        self.reward_coeff_position_cost_up = cfg.getfloat('reward', 'reward_coeff_positon_cost_up')
+        self.reward_coeff_position_cost_down = cfg.getfloat('reward', 'reward_coeff_positon_cost_down')
+        self.reward_coeff_position_cost_yaw = cfg.getfloat('reward', 'reward_coeff_position_cost_yaw')
 
         # goal
         self.goal_distance = cfg.getint('goal', 'goal_distance')
@@ -138,12 +160,34 @@ class AirsimMultirotor(gym.Env):
             'step_num': self.step_num
         }
         if self.navigation_3d:
-            reward, reward_split = self._compute_reward_3d(obs, done, action)
+            reward, reward_split = self._compute_reward_norm(obs, done, action)
         else:
             reward, reward_split = self._compute_reward(obs, done, action)
 
         self.cumulated_episode_reward += reward
         self.info_display(action, obs, done, reward)
+
+        self.action_signal.emit(int(self.total_step), action, self.vel_cmd_final, self.state_raw)
+        self.state_signal.emit(int(self.total_step), self.state_raw)
+        self.state_norm_signal.emit(int(self.total_step), self.state_norm)
+        self.reward_signal.emit(int(self.total_step), reward, self.cumulated_episode_reward)
+        
+
+        if self.keyboard_debug:
+            action_deg = np.copy(action)
+            action_deg[2] = math.degrees(action_deg[2])
+            state_deg = np.copy(self.state_raw)
+            state_deg[2] = math.degrees(state_deg[2])
+            state_deg[5] = math.degrees(state_deg[5])
+            np.set_printoptions(formatter={'float': '{: 0.3f}'.format})
+            print('=============================================================================')
+            print('episode', self.episode_num, 'step', self.step_num, 'total step', self.total_step)
+            print('action', action_deg)
+            print('state', state_deg)
+            print('state_norm', self.state_norm)
+            print('reward {:.3f} {:.3f}'.format(reward, self.cumulated_episode_reward))
+            print('done', done)
+            keyboard.wait('a')
 
         self.last_obs = obs
 
@@ -263,6 +307,14 @@ class AirsimMultirotor(gym.Env):
         cmd_vel_z_final = np.clip(cmd_vel_z_new, -self.max_vel_z, self.max_vel_z)
         cmd_yaw_rate_final = np.clip(cmd_yaw_rate_new, -self.max_vel_yaw_rad, self.max_vel_yaw_rad)
 
+        # print('action set===============')
+        # print('action {:.3f} {:.3f} {:.3f}'.format(cmd_vel_x, cmd_vel_z, math.degrees(cmd_yaw_rate)))
+        # print('current vel {:.3f} {:.3f} {:.3f}'.format(current_vel_x, current_vel_z, math.degrees(current_vel_yaw)))
+        # print('acc limit {:.3f} {:.3f} {:.3f}'.format(cmd_vel_x_new, cmd_vel_z_new, math.degrees(cmd_yaw_rate_new)))
+        # print('cmd final {:.3f} {:.3f} {:.3f}'.format(cmd_vel_x_final, cmd_vel_z_final, math.degrees(cmd_yaw_rate_final)))
+
+        self.vel_cmd_final = np.array([cmd_vel_x_final, cmd_vel_z_final, cmd_yaw_rate_final])
+
         '''
         # FoV limitation
         speed_scale = (self.fov_h_degrees - 2*math.degrees(abs(yaw_rate))) / self.fov_h_degrees
@@ -275,7 +327,7 @@ class AirsimMultirotor(gym.Env):
         # transfer dx dy from body frame to local frame
         vx_body = cmd_vel_x_final
         vy_body = 0
-        vz_body =  cmd_vel_z_final
+        vz_body = cmd_vel_z_final
         vx_local, vy_local = self.point_transfer(vx_body, vy_body, -current_yaw)
 
         # set 3d navigation action      
@@ -356,8 +408,8 @@ class AirsimMultirotor(gym.Env):
         reward_split = [0, 0, 0]
 
         # reward_reach = 10
-        reward_reach = 10
-        reward_crash = -10
+        reward_reach = 0
+        reward_crash = 0
         # reward_crash = -10
         reward_coeff_distance = 20
         reward_coeff_obstacle_distance = 0.5  # set punishment for too close to the obstacles
@@ -409,10 +461,10 @@ class AirsimMultirotor(gym.Env):
         reward_split = [0, 0, 0]
 
         # reward_reach = 10
-        reward_reach = 10
-        reward_crash = -10
+        reward_reach = 0
+        reward_crash = 0
         # reward_crash = -10
-        reward_coeff_distance = 20
+        reward_coeff_distance = 40
         reward_coeff_obstacle_distance = 0.5  # set punishment for too close to the obstacles
         # reward_step_punishment = 0.05
         # get distance from goal position
@@ -421,7 +473,8 @@ class AirsimMultirotor(gym.Env):
 
         if not done:
             # normalized distance to goal reward  
-            reward_distance = (self.previous_distance_from_des_point - distance_now) / self.goal_distance * reward_coeff_distance
+            # reward_distance = (self.previous_distance_from_des_point - distance_now) / self.goal_distance * reward_coeff_distance
+            reward_distance = (self.previous_distance_from_des_point - distance_now)
 
             # distance to obstacle cost
             reward_obs = 0
@@ -450,14 +503,69 @@ class AirsimMultirotor(gym.Env):
         else:
             if self.is_in_desired_pose():
                 reward = reward_reach
-                reward_split = [10, 0, 10]
+                reward_split = [10, 0, 0]
             if self.is_crashed():
                 reward = reward_crash
-                reward_split = [0, -10, -10]
+                reward_split = [0, -10, 0]
 
         if self.debug_mode:
             print('action: {:.4f} {:.4f} {:.4f}'.format(action[0], action[1], action[2]))
             print('reward:{:.4f} action_cost:{:.4f} vertical_speed_cost:{:.4f}'.format(reward, action_cost, vertical_speed_cost))
+
+        return reward, reward_split
+
+    def _compute_reward_norm(self, obs, done, action):
+        '''
+        @description: get a normalized reward function
+        @param {type} 
+        @return: 
+        '''
+        reward = 0
+        reward_split = [0, 0, 0]
+        
+        current_pose = self.get_current_pose()
+        distance_now = self.get_distance_from_desired_point(current_pose)
+        
+        if not done:
+            # 1. distance reward
+            reward_distance = np.clip((self.previous_distance_from_des_point - distance_now) / self.time_for_control_second / self.max_vel_x, 0, 1)
+            reward_distance = math.sqrt(reward_distance)
+
+            # 2. distance to obstacle cost
+            obs_cost = 0
+            if self.min_distance_to_obstacles < self.distance_to_obstacles_punishment:
+                obs_cost = self.reward_coeff_obstacle_distance * (self.min_distance_to_obstacles-self.distance_to_obstacles_punishment) \
+                         / (self.distance_to_obstacles_accept - self.distance_to_obstacles_punishment)
+
+            # 3. action cost
+            action_cost = 0
+            vertical_speed_cost = self.reward_coeff_action_cost * abs(action[1]) / self.max_vel_z
+            yaw_speed_cost = self.reward_coeff_action_cost * abs(action[2]) / self.max_vel_yaw_rad
+            action_cost = vertical_speed_cost + yaw_speed_cost
+
+            # 4. position cost
+            position_cost = 0
+            vertical_distance = self.state_raw[1]
+            relative_yaw = self.state_raw[2]
+
+            if vertical_distance < 0:
+                vertical_cost = self.reward_coeff_position_cost_down * abs(vertical_distance)
+            else:
+                vertical_cost = self.reward_coeff_position_cost_down * abs(vertical_distance)
+                
+            yaw_cost = self.reward_coeff_position_cost_yaw * np.clip((abs(relative_yaw) / math.radians(90)), 0, 1)
+            position_cost = vertical_cost + yaw_cost
+
+            reward = reward_distance - obs_cost - action_cost - position_cost
+
+            self.previous_distance_from_des_point = distance_now
+        else:
+            if self.is_in_desired_pose():
+                reward = 1
+            else:
+                reward = 0
+
+        reward = np.clip(reward, 0, 1)
 
         return reward, reward_split
 
@@ -487,7 +595,7 @@ class AirsimMultirotor(gym.Env):
         angular_velocity = groudtruth.angular_velocity
         linear_velocity_xy = math.sqrt(linear_velocity.x_val ** 2 + linear_velocity.y_val ** 2)
         linear_velocity_norm = linear_velocity_xy / self.max_vel_x * 255
-        linear_velocity_z = linear_velocity.z_val
+        linear_velocity_z = -linear_velocity.z_val
         linear_velocity_z_norm = (linear_velocity_z / self.max_vel_z / 2 + 0.5) * 255
         angular_velocity_norm = (angular_velocity.z_val / self.max_vel_yaw_rad / 2 + 0.5) * 255
 
@@ -713,3 +821,7 @@ class AirsimMultirotor(gym.Env):
         msg = 'reward split: {:.2f} {:.2f} {:.2f}'.format(reward_split[0], reward_split[1], reward_split[2])
         self.client.simPrintLogMessage('10-', msg)
 
+    def set_feature_before_fc(self, feature):
+        self.feature_before_fc = feature
+        self.feature_signal.emit(self.feature_before_fc)
+        # print(feature) 
