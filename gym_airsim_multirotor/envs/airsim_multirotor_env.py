@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-06-09 16:05:11
+@LastEditTime: 2020-06-09 22:25:20
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -558,14 +558,14 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
 
             reward = reward_distance - obs_cost - action_cost - position_cost
 
+            reward = np.clip(reward, 0, 1)
+
             self.previous_distance_from_des_point = min(distance_now, self.previous_distance_from_des_point)
         else:
             if self.is_in_desired_pose():
-                reward = 1
+                reward = 30
             else:
                 reward = 0
-
-        reward = np.clip(reward, 0, 1)
 
         return reward, reward_split
 
