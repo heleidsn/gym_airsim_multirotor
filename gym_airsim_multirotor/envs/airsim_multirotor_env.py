@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-06-09 22:25:20
+@LastEditTime: 2020-06-17 17:23:07
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -89,6 +89,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.reward_coeff_position_cost_up = cfg.getfloat('reward', 'reward_coeff_positon_cost_up')
         self.reward_coeff_position_cost_down = cfg.getfloat('reward', 'reward_coeff_positon_cost_down')
         self.reward_coeff_position_cost_yaw = cfg.getfloat('reward', 'reward_coeff_position_cost_yaw')
+        self.reward_step_punishment = cfg.getfloat('reward', 'reward_step_punishment')
 
         # goal
         self.goal_distance = cfg.getint('goal', 'goal_distance')
@@ -529,18 +530,20 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         if not done:
             # 1. distance reward
             reward_distance = np.clip((self.previous_distance_from_des_point - distance_now) / self.time_for_control_second / self.max_vel_x, 0, 1)
-            reward_distance = math.sqrt(reward_distance)
+            # reward_distance = math.sqrt(reward_distance)
 
             # 2. distance to obstacle cost
             obs_cost = 0
             if self.min_distance_to_obstacles < self.distance_to_obstacles_punishment:
-                obs_cost = self.reward_coeff_obstacle_distance * (self.min_distance_to_obstacles-self.distance_to_obstacles_punishment) \
+                obs_cost = (self.min_distance_to_obstacles - self.distance_to_obstacles_punishment) \
                          / (self.distance_to_obstacles_accept - self.distance_to_obstacles_punishment)
+                obs_cost = np.clip(abs(obs_cost), 0, 1)
+                obs_cost = self.reward_coeff_obstacle_distance * obs_cost
 
             # 3. action cost
             action_cost = 0
-            vertical_speed_cost = self.reward_coeff_action_cost * abs(action[1]) / self.max_vel_z
-            yaw_speed_cost = self.reward_coeff_action_cost * abs(action[2]) / self.max_vel_yaw_rad
+            vertical_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[1]) / self.max_vel_z), 0, 1)
+            yaw_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[2]) / self.max_vel_yaw_rad), 0, 1)
             action_cost = vertical_speed_cost + yaw_speed_cost
 
             # 4. position cost
@@ -549,21 +552,28 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             relative_yaw = self.state_raw[2]
 
             if vertical_distance < 0:
-                vertical_cost = self.reward_coeff_position_cost_down * abs(vertical_distance)
+                vertical_cost = self.reward_coeff_position_cost_down * np.clip(abs(vertical_distance), 0, 1)
             else:
-                vertical_cost = self.reward_coeff_position_cost_down * abs(vertical_distance)
+                vertical_cost = self.reward_coeff_position_cost_up * np.clip(abs(vertical_distance), 0, 1)
                 
             yaw_cost = self.reward_coeff_position_cost_yaw * np.clip((abs(relative_yaw) / math.radians(90)), 0, 1)
             position_cost = vertical_cost + yaw_cost
 
-            reward = reward_distance - obs_cost - action_cost - position_cost
+            # 5. time cost
+            time_cost = self.reward_step_punishment
 
-            reward = np.clip(reward, 0, 1)
+            # total reward
+            if distance_now < 10:
+                reward = 3*reward_distance - obs_cost - action_cost - 3*position_cost - time_cost
+                reward = np.clip(reward, 0, 3)
+            else:
+                reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
+                reward = np.clip(reward, 0, 1)
 
             self.previous_distance_from_des_point = min(distance_now, self.previous_distance_from_des_point)
         else:
             if self.is_in_desired_pose():
-                reward = 30
+                reward = 10
             else:
                 reward = 0
 
