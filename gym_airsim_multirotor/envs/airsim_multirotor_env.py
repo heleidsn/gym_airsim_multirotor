@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-06-17 17:23:07
+@LastEditTime: 2020-07-01 11:46:42
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -32,6 +32,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
     depth_image_signal = pyqtSignal(np.ndarray) # depth_image
     feature_signal = pyqtSignal(np.ndarray)
 
+    pose_signal = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)  # goal_pose current_pose trajectory
+
     def __init__(self):
         super(AirsimMultirotor, self).__init__()
         print('init AirsimMultirotor environment')
@@ -59,6 +61,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.min_distance_to_obstacles = 0
         self.vel_cmd_final = np.zeros(3)
         print('finish init environment')
+
+        self.trajectory_list = []
 
 
     def set_config(self, cfg):
@@ -151,6 +155,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
 
         self.step_num += 1
         self.total_step += 1
+        self.trajectory_list.append(self.state_current_pose)
         
         # get observation
         obs = self._get_obs()
@@ -172,7 +177,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.state_signal.emit(int(self.total_step), self.state_raw)
         self.state_norm_signal.emit(int(self.total_step), self.state_norm)
         self.reward_signal.emit(int(self.total_step), reward, self.cumulated_episode_reward)
-        
+
+        self.pose_signal.emit(self.goal_position, self.state_current_pose, np.asarray(self.trajectory_list))
 
         if self.keyboard_debug:
             action_deg = np.copy(action)
@@ -230,12 +236,15 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             current_pos = self.client.simGetVehiclePose().position
 
         self.client.simPause(True)
+        pose = self.client.simGetVehiclePose().position
+        self.state_current_pose = np.array([pose.x_val, pose.y_val, -pose.z_val])
 
     def _init_env_variables(self):
         self._change_goal_pose_random()
         # self._change_goal_for_NH_env()
         self.step_num = 0
         self.previous_distance_from_des_point = self.goal_distance
+        self.trajectory_list = []
 
     def _update_episode(self):
         self.episode_num += 1
@@ -307,24 +316,16 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         cmd_vel_x_final = np.clip(cmd_vel_x_new, self.min_vel_x, self.max_vel_x)
         cmd_vel_z_final = np.clip(cmd_vel_z_new, -self.max_vel_z, self.max_vel_z)
         cmd_yaw_rate_final = np.clip(cmd_yaw_rate_new, -self.max_vel_yaw_rad, self.max_vel_yaw_rad)
-
-        # print('action set===============')
-        # print('action {:.3f} {:.3f} {:.3f}'.format(cmd_vel_x, cmd_vel_z, math.degrees(cmd_yaw_rate)))
-        # print('current vel {:.3f} {:.3f} {:.3f}'.format(current_vel_x, current_vel_z, math.degrees(current_vel_yaw)))
-        # print('acc limit {:.3f} {:.3f} {:.3f}'.format(cmd_vel_x_new, cmd_vel_z_new, math.degrees(cmd_yaw_rate_new)))
-        # print('cmd final {:.3f} {:.3f} {:.3f}'.format(cmd_vel_x_final, cmd_vel_z_final, math.degrees(cmd_yaw_rate_final)))
-
-        self.vel_cmd_final = np.array([cmd_vel_x_final, cmd_vel_z_final, cmd_yaw_rate_final])
-
-        '''
+    
         # FoV limitation
-        speed_scale = (self.fov_h_degrees - 2*math.degrees(abs(yaw_rate))) / self.fov_h_degrees
+        speed_scale = (self.fov_h_degrees - math.degrees(abs(cmd_yaw_rate_final))) / self.fov_h_degrees
         speed_scale = max(0, speed_scale)
         speed_scale = 1
         if self.debug_mode:
             print('[_set_action]', 'yaw_rate_cmd: ', yaw_rate, 'speed_scale:', speed_scale) 
-        '''
-        
+
+        cmd_vel_x_final = cmd_vel_x_final * speed_scale
+        self.vel_cmd_final = np.array([cmd_vel_x_final, cmd_vel_z_final, cmd_yaw_rate_final])
         # transfer dx dy from body frame to local frame
         vx_body = cmd_vel_x_final
         vy_body = 0
@@ -337,6 +338,9 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
                                             yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(cmd_yaw_rate_final))).join()
                           
         self.client.simPause(True)
+
+        pose = self.client.simGetVehiclePose().position
+        self.state_current_pose = np.array([pose.x_val, pose.y_val, -pose.z_val])
 
     def _set_action_2d(self, action):
         '''
@@ -374,6 +378,9 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
                                              yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(yaw_rate))).join()                    
 
         self.client.simPause(True)
+
+        pose = self.client.simGetVehiclePose().position
+        self.state_current_pose = np.array([pose.x_val, pose.y_val, -pose.z_val])
 
     def _is_done(self, obs):
         """
@@ -417,7 +424,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         # reward_step_punishment = 0.05
         # get distance from goal position
         current_pose = self.get_current_pose()
-        distance_now = self.get_distance_from_desired_point(current_pose)
+        distance_now = self.get_distance_from_desired_point_2d(current_pose)
 
         if not done:
             # normalized distance to goal reward  
@@ -470,7 +477,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         # reward_step_punishment = 0.05
         # get distance from goal position
         current_pose = self.get_current_pose()
-        distance_now = self.get_distance_from_desired_point(current_pose)
+        distance_now = self.get_distance_from_desired_point_2d(current_pose)
 
         if not done:
             # normalized distance to goal reward  
@@ -525,7 +532,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         reward_split = [0, 0, 0]
         
         current_pose = self.get_current_pose()
-        distance_now = self.get_distance_from_desired_point(current_pose)
+        distance_now = self.get_distance_from_desired_point_2d(current_pose)
         
         if not done:
             # 1. distance reward
@@ -542,6 +549,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
 
             # 3. action cost
             action_cost = 0
+            forward_speed_cost = self.reward_coeff_action_cost * np.clip((abs(4 - action[0]) / 4), 0, 1)
             vertical_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[1]) / self.max_vel_z), 0, 1)
             yaw_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[2]) / self.max_vel_yaw_rad), 0, 1)
             action_cost = vertical_speed_cost + yaw_speed_cost
@@ -562,13 +570,16 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             # 5. time cost
             time_cost = self.reward_step_punishment
 
-            # total reward
-            if distance_now < 10:
-                reward = 3*reward_distance - obs_cost - action_cost - 3*position_cost - time_cost
-                reward = np.clip(reward, 0, 3)
-            else:
-                reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
-                reward = np.clip(reward, 0, 1)
+            # # total reward
+            # if distance_now < 10:
+            #     reward = 3*reward_distance - obs_cost - action_cost - 3*position_cost - time_cost
+            #     reward = np.clip(reward, 0, 3)
+            # else:
+            #     reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
+            #     reward = np.clip(reward, 0, 1)
+
+            reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
+            reward = np.clip(reward, 0, 1)
 
             self.previous_distance_from_des_point = min(distance_now, self.previous_distance_from_des_point)
         else:
@@ -590,7 +601,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
                     normalized state range 0-255
         '''
         current_pose = self.get_current_pose()
-        distance = self.get_distance_from_desired_point(current_pose)
+        distance = self.get_distance_from_desired_point_2d(current_pose)
         relative_yaw = self._get_ralative_yaw(current_pose, self.goal_position)
 
         relative_pose_z = -(self.goal_position[2] + current_pose[2])  # current position z is negative
@@ -626,9 +637,13 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
 
 # Some useful methods
     # --------------------------------------------
-    def get_distance_from_desired_point(self, current_pose):
+    def get_distance_from_desired_point_2d(self, current_pose):
         relative_pose = current_pose - self.goal_position
         return math.sqrt(pow(relative_pose[0], 2) + pow(relative_pose[1], 2))
+    
+    def get_distance_from_desired_point_3d(self, current_pose):
+        relative_pose = current_pose - self.goal_position
+        return math.sqrt(pow(relative_pose[0], 2) + pow(relative_pose[1], 2) + pow(relative_pose[2], 2))
 
     def get_distance_between_points(self, p_start, p_end):
         """
@@ -654,7 +669,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
     def is_in_desired_pose(self):
         in_desired_pose = False
         current_position = self.get_current_pose()
-        if self.get_distance_from_desired_point(current_position) < self.accept_radius:
+        if self.get_distance_from_desired_point_3d(current_position) < self.accept_radius:
             in_desired_pose = True
 
         return in_desired_pose
@@ -739,8 +754,6 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         return airsim.to_eularian_angles(self.state_current_attitude)
 
     def get_current_pose(self):
-        pose = self.client.simGetVehiclePose().position
-        self.state_current_pose = np.array([pose.x_val, pose.y_val, pose.z_val])
         return self.state_current_pose
 
     # def get_current_velocity(self):
