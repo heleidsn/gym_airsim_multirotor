@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-07-03 17:34:21
+@LastEditTime: 2020-07-04 21:10:18
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -78,6 +78,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.keyboard_debug = cfg.getboolean('config', 'keyboard_debug')
         self.navigation_3d = cfg.getboolean('config', 'navigation_3d')
         self.debug_mode = cfg.getboolean('config', 'debug_mode')
+        self.control_mode = cfg.get('config', 'control_mode')
+        print(self.control_mode)
 
         # environment
         self.max_episode_steps = cfg.getint('environment', 'max_episode_steps')
@@ -85,7 +87,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         # uav_model
         self.acc_lim_x = cfg.getfloat('uav_model', 'acc_lim_x')
         self.acc_lim_z = cfg.getfloat('uav_model', 'acc_lim_z')
-        self.acc_lim_yaw_rad = math.radians(cfg.getfloat('uav_model', 'acc_lim_yaw_deg'))
+        self.acc_lim_yaw_deg = cfg.getfloat('uav_model', 'acc_lim_yaw_deg')
+        self.acc_lim_yaw_rad = math.radians(self.acc_lim_yaw_deg)
 
         self.max_vel_x = cfg.getfloat('uav_model', 'max_vel_x')
         self.min_vel_x = cfg.getfloat('uav_model', 'min_vel_x')
@@ -132,9 +135,14 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             self.state_feature_length = 6
             self.state_raw = np.zeros(self.state_feature_length)
             self.state_norm = np.zeros(self.state_feature_length)
-            self.action_space = spaces.Box(low=np.array([self.min_vel_x , -self.max_vel_z, -self.max_vel_yaw_rad]), \
-                                        high=np.array([self.max_vel_x, self.max_vel_z, self.max_vel_yaw_rad]), \
-                                        dtype=np.float32)
+            if self.control_mode == 'acc':
+                self.action_space = spaces.Box(low=np.array([-self.acc_lim_x , -self.acc_lim_z, -self.acc_lim_yaw_deg]), \
+                                            high=np.array([self.acc_lim_x, self.acc_lim_z, self.acc_lim_yaw_deg]), \
+                                            dtype=np.float32)
+            else:
+                self.action_space = spaces.Box(low=np.array([self.min_vel_x , -self.max_vel_z, -self.max_vel_yaw_rad]), \
+                                            high=np.array([self.max_vel_x, self.max_vel_z, self.max_vel_yaw_rad]), \
+                                            dtype=np.float32)
         else:
             self.state_feature_length = 4
             self.state_raw = np.zeros(self.state_feature_length)
@@ -147,7 +155,10 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
     def step(self, action):
         # set action
         if self.navigation_3d:
-            self._set_action_3d(action)
+            if self.control_mode == 'acc':
+                self._set_action_acc_3d(action)
+            else:
+                self._set_action_3d(action)
         else:
             self._set_action_2d(action)
 
@@ -383,6 +394,63 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         pose = self.client.simGetVehiclePose().position
         self.state_current_pose = np.array([pose.x_val, pose.y_val, -pose.z_val])
 
+    def _set_action_acc_3d(self, action):
+        '''
+        @description: set action for 3D navigation using acc
+        @param {type}:  action[0]: forward velocity
+                        action[1]: vertical velocity
+                        action[2]: yaw velocity
+        @return: 
+        '''
+        self.client.simPause(False)
+
+        # get actions
+        acc_x = float(action[0])
+        acc_y = float(action[1])
+        acc_yaw_rad = math.radians(float(action[2]))
+        
+        # get current state
+        current_vel_x = self.state_raw[3]
+        current_vel_z = self.state_raw[4]
+        current_vel_yaw = self.state_raw[5]
+
+        current_yaw = self.get_current_attitude_radian()[2]
+
+        # get desired velocity
+        cmd_vel_x_new = current_vel_x + acc_x * self.time_for_control_second
+        cmd_vel_z_new = current_vel_z + acc_y * self.time_for_control_second
+        cmd_yaw_rate_new = current_vel_yaw + acc_yaw_rad * self.time_for_control_second
+
+        # velocity limitation
+        cmd_vel_x_final = np.clip(cmd_vel_x_new, self.min_vel_x, self.max_vel_x)
+        cmd_vel_z_final = np.clip(cmd_vel_z_new, -self.max_vel_z, self.max_vel_z)
+        cmd_yaw_rate_final = np.clip(cmd_yaw_rate_new, -self.max_vel_yaw_rad, self.max_vel_yaw_rad)
+    
+        # FoV limitation
+        speed_scale = (self.fov_h_degrees - math.degrees(abs(cmd_yaw_rate_final))) / self.fov_h_degrees
+        speed_scale = max(0, speed_scale)
+        speed_scale = 1
+        if self.debug_mode:
+            print('[_set_action]', 'yaw_rate_cmd: ', yaw_rate, 'speed_scale:', speed_scale) 
+
+        cmd_vel_x_final = cmd_vel_x_final * speed_scale
+        self.vel_cmd_final = np.array([cmd_vel_x_final, cmd_vel_z_final, cmd_yaw_rate_final])
+        # transfer dx dy from body frame to local frame
+        vx_body = cmd_vel_x_final
+        vy_body = 0
+        vz_body = cmd_vel_z_final
+        vx_local, vy_local = self.point_transfer(vx_body, vy_body, -current_yaw)
+
+        # set 3d navigation action
+        self.client.moveByVelocityAsync(vx_local, vy_local, -vz_body, self.time_for_control_second,
+                                            drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
+                                            yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(cmd_yaw_rate_final))).join()
+                          
+        self.client.simPause(True)
+
+        pose = self.client.simGetVehiclePose().position
+        self.state_current_pose = np.array([pose.x_val, pose.y_val, -pose.z_val])
+        
     def _is_done(self, obs):
         """
         The done can be done due to three reasons:
