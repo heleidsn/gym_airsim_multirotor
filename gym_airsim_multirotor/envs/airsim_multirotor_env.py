@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-07-03 15:21:03
+@LastEditTime: 2020-07-03 17:34:21
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -24,13 +24,16 @@ from PyQt5 import QtCore
 from PyQt5.QtCore import pyqtSignal
 
 class AirsimMultirotor(gym.Env, QtCore.QThread):
-    # metadata = {'render.modes': ['human']}
     action_signal = pyqtSignal(int, np.ndarray, np.ndarray, np.ndarray) # vel_x, vel_z, vel_yaw
     state_signal = pyqtSignal(int, np.ndarray) # state_raw
     state_norm_signal = pyqtSignal(int, np.ndarray)
     reward_signal = pyqtSignal(int, float, float) # step_reward, total_reward
     depth_image_signal = pyqtSignal(np.ndarray) # depth_image
     feature_signal = pyqtSignal(np.ndarray)
+
+    # signals for shap explain
+    training_info_signal = pyqtSignal(int, int, int, float, float, bool)  # episode, timestep, total timestep, reward, accumulate reward, done
+    state_raw_norm_signal = pyqtSignal(np.ndarray, np.ndarray) # raw and norm state
 
     pose_signal = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)  # goal_pose current_pose trajectory
 
@@ -173,6 +176,9 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.state_norm_signal.emit(int(self.total_step), self.state_norm)
         self.reward_signal.emit(int(self.total_step), reward, self.cumulated_episode_reward)
 
+        # emit signals for shap explain
+        self.training_info_signal.emit(self.episode_num, self.step_num, self.total_step, reward, self.cumulated_episode_reward, done) # episode, timestep, total timestep, reward, accumulate reward, done
+        self.state_raw_norm_signal.emit(self.state_raw, self.state_norm)
         self.pose_signal.emit(self.goal_position, self.state_current_pose, np.asarray(self.trajectory_list))
 
         if self.keyboard_debug:
