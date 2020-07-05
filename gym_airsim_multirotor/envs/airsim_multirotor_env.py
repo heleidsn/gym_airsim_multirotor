@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-07-04 21:10:18
+@LastEditTime: 2020-07-04 21:18:28
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -150,7 +150,6 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             self.action_space = spaces.Box(low=np.array([self.min_vel_x , -self.max_vel_yaw_rad]), \
                                         high=np.array([self.max_vel_x, self.max_vel_yaw_rad]), \
                                         dtype=np.float32)
-
 
     def step(self, action):
         # set action
@@ -730,7 +729,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         current_position = self.get_current_pose()
 
         if max(abs(current_position[0]), abs(current_position[1])) > self.work_space_xy_max or \
-            -current_position[2] > self.work_space_z_max:
+                                               current_position[2] > self.work_space_z_max or \
+                                               current_position[2] < self.work_space_z_min:
             is_inside = False
 
         return is_inside
