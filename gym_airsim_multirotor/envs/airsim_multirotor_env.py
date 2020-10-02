@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-@LastEditTime: 2020-07-04 21:18:28
+LastEditTime: 2020-10-02 16:43:37
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -11,6 +11,7 @@ import time
 import keyboard
 
 import airsim
+from airsim import Vector3r, Quaternionr, Pose
 import cv2
 import gym
 import numpy as np
@@ -22,6 +23,8 @@ from gym.utils import seeding
 
 from PyQt5 import QtCore
 from PyQt5.QtCore import pyqtSignal
+
+from scipy import signal
 
 class AirsimMultirotor(gym.Env, QtCore.QThread):
     action_signal = pyqtSignal(int, np.ndarray, np.ndarray, np.ndarray) # vel_x, vel_z, vel_yaw
@@ -65,7 +68,16 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.vel_cmd_final = np.zeros(3)
         print('finish init environment')
 
+        self.filter_last_value = np.zeros(3)
+
         self.trajectory_list = []
+        
+        self.trajectory_list_plot = []
+        self.plot_traj = False
+
+        if self.plot_traj:
+            self.client.simFlushPersistentMarkers()
+
 
 
     def set_config(self, cfg):
@@ -102,6 +114,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.reward_coeff_position_cost_down = cfg.getfloat('reward', 'reward_coeff_position_cost_down')
         self.reward_coeff_position_cost_yaw = cfg.getfloat('reward', 'reward_coeff_position_cost_yaw')
         self.reward_step_punishment = cfg.getfloat('reward', 'reward_step_punishment')
+        self.reward_reach = cfg.getfloat('reward', 'reward_reach')
+        self.reward_crash = cfg.getfloat('reward', 'reward_crash')
 
         # goal
         self.goal_distance = cfg.getint('goal', 'goal_distance')
@@ -164,13 +178,18 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.step_num += 1
         self.total_step += 1
         self.trajectory_list.append(self.state_current_pose)
+        self.trajectory_list_plot.append(self.state_current_pose_plot)
+
+        if self.plot_traj:
+            self.client.simPlotLineStrip(points=self.trajectory_list_plot[-2:], color_rgba=[1.0, 0.0, 0.0, 0], thickness=5, duration=30.0, is_persistent=True)
         
         # get observation
         obs = self._get_obs()
         done = self._is_done(obs)
         info = {
             'is_success': self.is_in_desired_pose(),
-            'is_crash': self.is_crashed() or not self.is_inside_workspace(),
+            # 'is_crash': self.is_crashed() or not self.is_inside_workspace(),
+            'is_crash': self.is_crashed(),
             'step_num': self.step_num
         }
         if self.navigation_3d:
@@ -212,7 +231,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         if self.reward_decompose:
             return obs, reward, done, info, reward_split
         else:
-            return obs, reward, done, info      
+            return obs, reward, done, info
 
     def reset(self):
         self._reset_sim()
@@ -249,13 +268,16 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.client.simPause(True)
         pose = self.client.simGetVehiclePose().position
         self.state_current_pose = np.array([pose.x_val, pose.y_val, -pose.z_val])
+        self.state_current_pose_plot = Vector3r(pose.x_val, pose.y_val, pose.z_val)
 
     def _init_env_variables(self):
+        # self.client.simFlushPersistentMarkers()
         self._change_goal_pose_random()
         # self._change_goal_for_NH_env()
         self.step_num = 0
         self.previous_distance_from_des_point = self.goal_distance
         self.trajectory_list = []
+        self.trajectory_list_plot.append(self.state_current_pose_plot)
 
     def _update_episode(self):
         self.episode_num += 1
@@ -272,6 +294,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         image = self.get_depth_image()
         image_scaled = image * 100
         self.min_distance_to_obstacles = image_scaled.min()
+        # print("[get_obs] min_dist: {:.2f}".format(self.min_distance_to_obstacles))
         image_scaled = -np.clip(image_scaled, 0, 20) / 20 * 255 + 255  # 0-255  0-20m 255-0m
 
         image_uint8 = image_scaled.astype(np.uint8)
@@ -307,7 +330,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         cmd_vel_x = float(action[0])
         cmd_vel_z = float(action[1])
         cmd_yaw_rate = float(action[2])
-        
+
         # get current state
         current_vel_x = self.state_raw[3]
         current_vel_z = self.state_raw[4]
@@ -315,23 +338,34 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
 
         current_yaw = self.get_current_attitude_radian()[2]
 
-        # acc limitation
-        vel_x_range = np.array([current_vel_x - self.acc_lim_x * self.time_for_control_second, current_vel_x + self.acc_lim_x * self.time_for_control_second])
-        vel_z_range = np.array([current_vel_z - self.acc_lim_z * self.time_for_control_second, current_vel_z + self.acc_lim_z * self.time_for_control_second])
-        vel_yaw_range = np.array([current_vel_yaw - self.acc_lim_yaw_rad * self.time_for_control_second, current_vel_yaw + self.acc_lim_yaw_rad * self.time_for_control_second])
-        cmd_vel_x_new = np.clip(cmd_vel_x, vel_x_range[0], vel_x_range[1])
-        cmd_vel_z_new = np.clip(cmd_vel_z, vel_z_range[0], vel_z_range[1])
-        cmd_yaw_rate_new = np.clip(cmd_yaw_rate, vel_yaw_range[0], vel_yaw_range[1])
+        # # acc limitation
+        # vel_x_range = np.array([current_vel_x - self.acc_lim_x * self.time_for_control_second, current_vel_x + self.acc_lim_x * self.time_for_control_second])
+        # vel_z_range = np.array([current_vel_z - self.acc_lim_z * self.time_for_control_second, current_vel_z + self.acc_lim_z * self.time_for_control_second])
+        # vel_yaw_range = np.array([current_vel_yaw - self.acc_lim_yaw_rad * self.time_for_control_second, current_vel_yaw + self.acc_lim_yaw_rad * self.time_for_control_second])
+        # cmd_vel_x_new = np.clip(cmd_vel_x, vel_x_range[0], vel_x_range[1])
+        # cmd_vel_z_new = np.clip(cmd_vel_z, vel_z_range[0], vel_z_range[1])
+        # cmd_yaw_rate_new = np.clip(cmd_yaw_rate, vel_yaw_range[0], vel_yaw_range[1])
 
-        # velocity limitation
-        cmd_vel_x_final = np.clip(cmd_vel_x_new, self.min_vel_x, self.max_vel_x)
-        cmd_vel_z_final = np.clip(cmd_vel_z_new, -self.max_vel_z, self.max_vel_z)
-        cmd_yaw_rate_final = np.clip(cmd_yaw_rate_new, -self.max_vel_yaw_rad, self.max_vel_yaw_rad)
-    
+        # # velocity limitation
+        # cmd_vel_x_final = np.clip(cmd_vel_x_new, self.min_vel_x, self.max_vel_x)
+        # cmd_vel_z_final = np.clip(cmd_vel_z_new, -self.max_vel_z, self.max_vel_z)
+        # cmd_yaw_rate_final = np.clip(cmd_yaw_rate_new, -self.max_vel_yaw_rad, self.max_vel_yaw_rad)
+
+        # velocity with filter
+        alpha = 0.3
+
+        cmd_vel_x_final = alpha * cmd_vel_x + (1-alpha) * self.filter_last_value[0]
+        cmd_vel_z_final = alpha * cmd_vel_z + (1-alpha) * self.filter_last_value[1]
+        cmd_yaw_rate_final = alpha * cmd_yaw_rate + (1-alpha) * self.filter_last_value[1]
+
+        self.filter_last_value[0] = cmd_vel_x_final
+        self.filter_last_value[1] = cmd_vel_z_final
+        self.filter_last_value[2] = cmd_yaw_rate_final
+
         # FoV limitation
-        speed_scale = (self.fov_h_degrees - math.degrees(abs(cmd_yaw_rate_final))) / self.fov_h_degrees
+        speed_scale = (self.fov_h_degrees - 2 * math.degrees(abs(cmd_yaw_rate_final))) / self.fov_h_degrees
         speed_scale = max(0, speed_scale)
-        speed_scale = 1
+        # speed_scale = 1
         if self.debug_mode:
             print('[_set_action]', 'yaw_rate_cmd: ', yaw_rate, 'speed_scale:', speed_scale) 
 
@@ -352,6 +386,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
 
         pose = self.client.simGetVehiclePose().position
         self.state_current_pose = np.array([pose.x_val, pose.y_val, -pose.z_val])
+        self.state_current_pose_plot = Vector3r(pose.x_val, pose.y_val, pose.z_val)
 
     def _set_action_2d(self, action):
         '''
@@ -617,10 +652,10 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
 
             # 3. action cost
             action_cost = 0
-            forward_speed_cost = self.reward_coeff_action_cost * np.clip((abs(4 - action[0]) / 4), 0, 1)
+            forward_speed_cost = self.reward_coeff_action_cost * np.clip((abs(2.5 - action[0]) / 2.5), 0, 1)
             vertical_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[1]) / self.max_vel_z), 0, 1)
             yaw_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[2]) / self.max_vel_yaw_rad), 0, 1)
-            action_cost = vertical_speed_cost + yaw_speed_cost
+            action_cost = forward_speed_cost + vertical_speed_cost + yaw_speed_cost
 
             # 4. position cost
             position_cost = 0
@@ -652,9 +687,9 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             self.previous_distance_from_des_point = min(distance_now, self.previous_distance_from_des_point)
         else:
             if self.is_in_desired_pose():
-                reward = 10
+                reward = self.reward_reach
             else:
-                reward = 0
+                reward = self.reward_crash
 
         return reward, reward_split
 
@@ -799,6 +834,9 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.goal_position = np.array([goal_x, goal_y, self.takeoff_hight])
         # print(self.goal_position)
 
+        if self.plot_traj:
+            self.client.simPlotPoints(points=[Vector3r(goal_x, goal_y, -self.takeoff_hight)], color_rgba=[1.0, 0.0, 0.0, 1.0], size=25, duration=20.0, is_persistent=False)
+
     def _change_goal_for_NH_env(self):
         goal_list = [[120, 0, 5],
                      [0, 120, 5],
@@ -838,6 +876,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         # check observation
         while responses[0].width == 0:
             print("get_image_fail...")
+            self.client.simPause(False)
+            self.client.simPause(True)
             responses = self.client.simGetImages([
                 airsim.ImageRequest("0", airsim.ImageType.DepthVis, True, False)
                 ])
