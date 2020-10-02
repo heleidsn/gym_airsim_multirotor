@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-LastEditTime: 2020-10-02 16:43:37
+LastEditTime: 2020-10-02 17:15:18
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -139,6 +139,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.max_vertical_difference = cfg.getfloat('control', 'max_vertical_difference')
         self.distance_to_obstacles_accept = cfg.getint('control', 'distance_to_obstacles_accept')
         self.distance_to_obstacles_punishment = cfg.getint('control', 'distance_to_obstacles_punishment')
+        self.low_pass_filter_alpha = cfg.getfloat('control', 'low_pass_filter_alpha')
 
         # observation and action space
         self.observation_space = spaces.Box(low=0, high=255, \
@@ -352,11 +353,11 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         # cmd_yaw_rate_final = np.clip(cmd_yaw_rate_new, -self.max_vel_yaw_rad, self.max_vel_yaw_rad)
 
         # velocity with filter
-        alpha = 0.3
+        alpha = self.low_pass_filter_alpha
 
         cmd_vel_x_final = alpha * cmd_vel_x + (1-alpha) * self.filter_last_value[0]
         cmd_vel_z_final = alpha * cmd_vel_z + (1-alpha) * self.filter_last_value[1]
-        cmd_yaw_rate_final = alpha * cmd_yaw_rate + (1-alpha) * self.filter_last_value[1]
+        cmd_yaw_rate_final = alpha * cmd_yaw_rate + (1-alpha) * self.filter_last_value[2]
 
         self.filter_last_value[0] = cmd_vel_x_final
         self.filter_last_value[1] = cmd_vel_z_final
