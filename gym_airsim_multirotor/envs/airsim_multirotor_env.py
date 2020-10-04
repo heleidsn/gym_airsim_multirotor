@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-LastEditTime: 2020-10-02 17:15:18
+LastEditTime: 2020-10-04 15:44:28
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -657,6 +657,10 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             vertical_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[1]) / self.max_vel_z), 0, 1)
             yaw_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[2]) / self.max_vel_yaw_rad), 0, 1)
             action_cost = forward_speed_cost + vertical_speed_cost + yaw_speed_cost
+            a1_discount = 1 - abs(2 * action[0] - self.max_vel_x) / self.max_vel_x * 0.1
+            a2_discount = 1 - abs(action[1]) / self.max_vel_z * 0.1
+            a3_discount = 1 - abs(action[2]) / self.max_vel_yaw_rad * 0.1
+            action_discount = a1_discount * a2_discount * a3_discount
 
             # 4. position cost
             position_cost = 0
@@ -671,6 +675,10 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             yaw_cost = self.reward_coeff_position_cost_yaw * np.clip((abs(relative_yaw) / math.radians(90)), 0, 1)
             position_cost = vertical_cost + yaw_cost
 
+            p2_discount = 1 - np.clip(abs(vertical_distance) / self.max_vertical_difference, 0, 1) * 0.3
+            p3_discount = 1 - np.clip((abs(relative_yaw) / math.radians(60)), 0, 1) * 0.3
+            position_discount = p2_discount * p3_discount
+
             # 5. time cost
             time_cost = self.reward_step_punishment
 
@@ -682,13 +690,16 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             #     reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
             #     reward = np.clip(reward, 0, 1)
 
-            reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
+            # reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
+            reward = reward_distance * action_discount * position_discount - obs_cost - time_cost
+
             reward = np.clip(reward, 0, 1)
 
             self.previous_distance_from_des_point = min(distance_now, self.previous_distance_from_des_point)
         else:
             if self.is_in_desired_pose():
-                reward = self.reward_reach
+                relative_yaw = self.state_raw[2]
+                reward = self.reward_reach * (1 - np.clip((abs(relative_yaw) / math.radians(60)), 0, 1))
             else:
                 reward = self.reward_crash
 
