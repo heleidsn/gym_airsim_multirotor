@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-LastEditTime: 2020-10-04 15:44:28
+LastEditTime: 2020-10-05 23:31:52
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -71,30 +71,31 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.filter_last_value = np.zeros(3)
 
         self.trajectory_list = []
-        
         self.trajectory_list_plot = []
-        self.plot_traj = False
 
+    def set_config(self, cfg):
+        # config
+        self.navigation_3d = cfg.getboolean('config', 'navigation_3d')
+        self.reward_decompose = cfg.getboolean('config', 'reward_decompose')
+        self.keyboard_debug = cfg.getboolean('config', 'keyboard_debug')
+        self.debug_mode = cfg.getboolean('config', 'debug_mode')
+        self.control_mode = cfg.get('config', 'control_mode')
+        self.plot_traj = cfg.getboolean('config', 'plot_traj')
         if self.plot_traj:
             self.client.simFlushPersistentMarkers()
 
-
-
-    def set_config(self, cfg):
-        # name
-        self.config_file_name = cfg.get('name', 'config_file_name')
-        print('Using config file: ', self.config_file_name)
-
-        # config
-        self.reward_decompose = cfg.getboolean('config', 'reward_decompose')
-        self.keyboard_debug = cfg.getboolean('config', 'keyboard_debug')
-        self.navigation_3d = cfg.getboolean('config', 'navigation_3d')
-        self.debug_mode = cfg.getboolean('config', 'debug_mode')
-        self.control_mode = cfg.get('config', 'control_mode')
-        print(self.control_mode)
-
         # environment
         self.max_episode_steps = cfg.getint('environment', 'max_episode_steps')
+
+        # goal
+        self.goal_distance = cfg.getint('goal', 'goal_distance')
+        self.takeoff_hight = cfg.getint('goal', 'takeoff_hight')
+        self.goal_angle_noise_degree = cfg.getint('goal', 'goal_angle_noise_degree')
+        self.accept_radius = cfg.getint('goal', 'goal_accept_radius')
+        
+        self.work_space_xy_max = self.goal_distance + cfg.getint('goal', 'work_space_xy_padding')
+        self.work_space_z_max = cfg.getint('goal', 'work_space_z_max')
+        self.work_space_z_min = cfg.getint('goal', 'work_space_z_min')
 
         # uav_model
         self.acc_lim_x = cfg.getfloat('uav_model', 'acc_lim_x')
@@ -107,39 +108,33 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.max_vel_z = cfg.getfloat('uav_model', 'max_vel_z')
         self.max_vel_yaw_rad = math.radians(cfg.getfloat('uav_model', 'max_vel_yaw_deg'))
 
+        self.time_for_control_second = cfg.getfloat('uav_model', 'control_time_interval')
+        self.low_pass_filter_alpha = cfg.getfloat('uav_model', 'low_pass_filter_alpha')
+
+        self.max_vertical_difference = cfg.getfloat('uav_model', 'max_vertical_difference')
+        self.distance_to_obstacles_accept = cfg.getint('uav_model', 'distance_to_obstacles_accept')
+        self.distance_to_obstacles_punishment = cfg.getint('uav_model', 'distance_to_obstacles_punishment')
+
         # reward
         self.reward_coeff_obstacle_distance = cfg.getfloat('reward', 'reward_coeff_obstacle_distance')
         self.reward_coeff_action_cost = cfg.getfloat('reward', 'reward_coeff_action_cost')
         self.reward_coeff_position_cost_up = cfg.getfloat('reward', 'reward_coeff_position_cost_up')
         self.reward_coeff_position_cost_down = cfg.getfloat('reward', 'reward_coeff_position_cost_down')
         self.reward_coeff_position_cost_yaw = cfg.getfloat('reward', 'reward_coeff_position_cost_yaw')
+        
+        self.reward_discount_position_z = cfg.getfloat('reward', 'reward_discount_position_z')
+        self.reward_discount_position_yaw = cfg.getfloat('reward', 'reward_discount_position_yaw')
+        self.reward_discount_action = cfg.getfloat('reward', 'reward_discount_action')
+
         self.reward_step_punishment = cfg.getfloat('reward', 'reward_step_punishment')
         self.reward_reach = cfg.getfloat('reward', 'reward_reach')
         self.reward_crash = cfg.getfloat('reward', 'reward_crash')
-
-        # goal
-        self.goal_distance = cfg.getint('goal', 'goal_distance')
-        self.goal_angle_noise_degree = cfg.getint('goal', 'goal_angle_noise_degree')
-        self.accept_radius = cfg.getint('goal', 'goal_accept_radius')
-        
-        # work space
-        self.work_space_xy_max = self.goal_distance + cfg.getint('work_space', 'work_space_xy_padding')
-        self.work_space_z_max = cfg.getint('work_space', 'work_space_z_max')
-        self.work_space_z_min = cfg.getint('work_space', 'work_space_z_min')
 
         # input image
         self.screen_height = cfg.getint('input_image', 'image_height')
         self.screen_width = cfg.getint('input_image', 'image_width')
         self.fov_h_degrees = cfg.getint('input_image', 'fov_horizontal_degrees')
         self.fov_v_degrees = cfg.getint('input_image', 'fov_vertical_degrees')
-
-        # control
-        self.takeoff_hight = cfg.getint('control', 'takeoff_hight')
-        self.time_for_control_second = cfg.getfloat('control', 'control_time_interval')
-        self.max_vertical_difference = cfg.getfloat('control', 'max_vertical_difference')
-        self.distance_to_obstacles_accept = cfg.getint('control', 'distance_to_obstacles_accept')
-        self.distance_to_obstacles_punishment = cfg.getint('control', 'distance_to_obstacles_punishment')
-        self.low_pass_filter_alpha = cfg.getfloat('control', 'low_pass_filter_alpha')
 
         # observation and action space
         self.observation_space = spaces.Box(low=0, high=255, \
@@ -657,9 +652,9 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             vertical_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[1]) / self.max_vel_z), 0, 1)
             yaw_speed_cost = self.reward_coeff_action_cost * np.clip((abs(action[2]) / self.max_vel_yaw_rad), 0, 1)
             action_cost = forward_speed_cost + vertical_speed_cost + yaw_speed_cost
-            a1_discount = 1 - abs(2 * action[0] - self.max_vel_x) / self.max_vel_x * 0.1
-            a2_discount = 1 - abs(action[1]) / self.max_vel_z * 0.1
-            a3_discount = 1 - abs(action[2]) / self.max_vel_yaw_rad * 0.1
+            a1_discount = 1 - np.clip(abs(2 * action[0] - self.max_vel_x) / self.max_vel_x, 0, 1) * self.reward_discount_action
+            a2_discount = 1 - np.clip(abs(action[1]) / self.max_vel_z, 0, 1) * self.reward_discount_action
+            a3_discount = 1 - np.clip(abs(action[2]) / self.max_vel_yaw_rad, 0, 1) * self.reward_discount_action
             action_discount = a1_discount * a2_discount * a3_discount
 
             # 4. position cost
@@ -675,8 +670,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             yaw_cost = self.reward_coeff_position_cost_yaw * np.clip((abs(relative_yaw) / math.radians(90)), 0, 1)
             position_cost = vertical_cost + yaw_cost
 
-            p2_discount = 1 - np.clip(abs(vertical_distance) / self.max_vertical_difference, 0, 1) * 0.3
-            p3_discount = 1 - np.clip((abs(relative_yaw) / math.radians(60)), 0, 1) * 0.3
+            p2_discount = 1 - np.clip(abs(vertical_distance) / self.max_vertical_difference, 0, 1) * self.reward_discount_position_z
+            p3_discount = 1 - np.clip((abs(relative_yaw) / math.radians(self.max_vel_yaw_deg)), 0, 1) * self.reward_discount_position_yaw
             position_discount = p2_discount * p3_discount
 
             # 5. time cost
