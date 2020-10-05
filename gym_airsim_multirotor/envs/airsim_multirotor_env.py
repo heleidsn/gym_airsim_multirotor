@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-LastEditTime: 2020-10-05 23:46:47
+LastEditTime: 2020-10-05 23:58:38
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -106,7 +106,8 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.max_vel_x = cfg.getfloat('uav_model', 'max_vel_x')
         self.min_vel_x = cfg.getfloat('uav_model', 'min_vel_x')
         self.max_vel_z = cfg.getfloat('uav_model', 'max_vel_z')
-        self.max_vel_yaw_rad = math.radians(cfg.getfloat('uav_model', 'max_vel_yaw_deg'))
+        self.max_vel_yaw_deg = cfg.getfloat('uav_model', 'max_vel_yaw_deg')
+        self.max_vel_yaw_rad = math.radians(self.max_vel_yaw_deg)
 
         self.time_for_control_second = cfg.getfloat('uav_model', 'control_time_interval')
         self.low_pass_filter_alpha = cfg.getfloat('uav_model', 'low_pass_filter_alpha')
