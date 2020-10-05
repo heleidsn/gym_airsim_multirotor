@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-LastEditTime: 2020-10-05 23:31:52
+LastEditTime: 2020-10-05 23:46:47
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -115,6 +115,11 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.distance_to_obstacles_accept = cfg.getint('uav_model', 'distance_to_obstacles_accept')
         self.distance_to_obstacles_punishment = cfg.getint('uav_model', 'distance_to_obstacles_punishment')
 
+        self.screen_height = cfg.getint('uav_model', 'image_height')
+        self.screen_width = cfg.getint('uav_model', 'image_width')
+        self.fov_h_degrees = cfg.getint('uav_model', 'fov_horizontal_degrees')
+        self.fov_v_degrees = cfg.getint('uav_model', 'fov_vertical_degrees')
+
         # reward
         self.reward_coeff_obstacle_distance = cfg.getfloat('reward', 'reward_coeff_obstacle_distance')
         self.reward_coeff_action_cost = cfg.getfloat('reward', 'reward_coeff_action_cost')
@@ -129,12 +134,6 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.reward_step_punishment = cfg.getfloat('reward', 'reward_step_punishment')
         self.reward_reach = cfg.getfloat('reward', 'reward_reach')
         self.reward_crash = cfg.getfloat('reward', 'reward_crash')
-
-        # input image
-        self.screen_height = cfg.getint('input_image', 'image_height')
-        self.screen_width = cfg.getint('input_image', 'image_width')
-        self.fov_h_degrees = cfg.getint('input_image', 'fov_horizontal_degrees')
-        self.fov_v_degrees = cfg.getint('input_image', 'fov_vertical_degrees')
 
         # observation and action space
         self.observation_space = spaces.Box(low=0, high=255, \
