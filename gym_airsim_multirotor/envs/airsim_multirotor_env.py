@@ -1,7 +1,7 @@
 '''
 @Author: Lei He
 @Date: 2020-05-29 16:54:52
-LastEditTime: 2020-10-05 23:58:38
+LastEditTime: 2021-04-01 09:34:36
 @FilePath: \gym_airsim_multirotor\gym_airsim_multirotor\envs\airsim_multirotor_env.py
 @Description: Gym like environemnt for AirSim. Using for 3D navigation.
 @Github: https://github.com/heleidsn
@@ -288,12 +288,16 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         # 1. get current depth image 0-255 uint8 
         
         image = self.get_depth_image()
+        # np.save('1-img_ori', image)
         image_scaled = image * 100
         self.min_distance_to_obstacles = image_scaled.min()
         # print("[get_obs] min_dist: {:.2f}".format(self.min_distance_to_obstacles))
         image_scaled = -np.clip(image_scaled, 0, 20) / 20 * 255 + 255  # 0-255  0-20m 255-0m
 
+        # np.save('2-img_scaled', image_scaled)
+
         image_uint8 = image_scaled.astype(np.uint8)
+        # np.save('3-img_gray', image_uint8)
         assert image_uint8.shape[0] == self.screen_height and image_uint8.shape[1] == self.screen_width, 'image size not match'
         # image_uint8 = image_uint8.reshape(self.screen_height, self.screen_width, 1)
         state_feature_array = np.zeros((self.screen_height, self.screen_width))
@@ -377,6 +381,10 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
         self.client.moveByVelocityAsync(vx_local, vy_local, -vz_body, self.time_for_control_second,
                                             drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
                                             yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(cmd_yaw_rate_final))).join()
+
+        # self.client.moveByVelocityZAsync(vx_local, vy_local, -self.takeoff_hight, self.time_for_control_second,
+        #                                     drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
+        #                                     yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(cmd_yaw_rate_final))).join()
                           
         self.client.simPause(True)
 
@@ -688,7 +696,7 @@ class AirsimMultirotor(gym.Env, QtCore.QThread):
             # reward = reward_distance - obs_cost - action_cost - position_cost - time_cost
             reward = reward_distance * action_discount * position_discount - obs_cost - time_cost
 
-            reward = np.clip(reward, 0, 1)
+            reward = np.clip(reward, -1, 1)
 
             self.previous_distance_from_des_point = min(distance_now, self.previous_distance_from_des_point)
         else:
