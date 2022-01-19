@@ -1,1 +1,2 @@
 from gym_airsim_multirotor.envs.airsim_multirotor_env import AirsimMultirotor
+from gym_airsim_multirotor.envs.simple_dynamic_env import SimpleDynamicEnv
