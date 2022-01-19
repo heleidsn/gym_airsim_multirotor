@@ -14,7 +14,7 @@ class SimpleDynamicEnv(gym.Env):
     def __init__(self, 
                  x_init=0, 
                  y_init=0, 
-                 z_init=3, 
+                 z_init=5, 
                  yaw_rad_init=0, 
                  dt=0.1) -> None:
         super().__init__()
@@ -36,9 +36,9 @@ class SimpleDynamicEnv(gym.Env):
 
         # goal
         self.start_position = [x_init, y_init, z_init, yaw_rad_init]
-        self.goal_angle_noise_degree = 20
+        self.goal_angle_noise_degree = 180
         self.goal_position = np.zeros(3)
-        self.goal_distance = 40
+        self.goal_distance = 70
 
         # training state
         self.episode_num = 0
@@ -50,7 +50,7 @@ class SimpleDynamicEnv(gym.Env):
         # other settings
         self.distance_to_obstacles_accept = 2
         self.accept_radius = 2
-        self.max_episode_steps = 100
+        self.max_episode_steps = 600
 
         self.work_space_xy_max = self.goal_distance + 10
         self.work_space_z_max =  10
@@ -58,10 +58,10 @@ class SimpleDynamicEnv(gym.Env):
         self.max_vertical_difference = 5
 
         self.navigation_3d = False
-        self.max_vel_x = 2
-        self.min_vel_x = 0
+        self.max_vel_x = 5
+        self.min_vel_x = 1
         self.max_vel_z = 1
-        self.max_vel_yaw_deg = 30
+        self.max_vel_yaw_deg = 50
         self.max_vel_yaw_rad = math.radians(self.max_vel_yaw_deg)
         self.screen_height = 80
         self.screen_width = 100
@@ -97,8 +97,10 @@ class SimpleDynamicEnv(gym.Env):
             'is_crash': self.is_crashed(),
             'step_num': self.step_num
         }
-        reward = self._compute_reward()
+        reward = self._compute_reward(done, action)
         self.cumulated_episode_reward += reward
+
+        # print(self.episode_num, self.step_num, "{:.2f} {:.2f} {:.2f} {:.2f}".format(action[0], action[1], reward, self.cumulated_episode_reward), self.state_norm)
 
         self.step_num += 1
         self.total_step += 1
@@ -107,10 +109,11 @@ class SimpleDynamicEnv(gym.Env):
 
     def reset(self):
         # reset state
+        yaw_noise = math.radians(360) * np.random.random()
         self.x = self.start_position[0]
         self.y = self.start_position[1]
         self.z = self.start_position[2]
-        self.yaw_rad = self.start_position[3] # -180~180
+        self.yaw_rad = self.start_position[3] + yaw_noise# -180~180
         self.v_xy = 0
         self.v_z = 0
         self.yaw_rate = 0
@@ -120,6 +123,7 @@ class SimpleDynamicEnv(gym.Env):
         pose.position.x_val = self.x
         pose.position.y_val = self.y
         pose.position.z_val = -self.z
+        
         pose.orientation = airsim.to_quaternion(0, 0, self.yaw_rad)
         self.client.simSetVehiclePose(pose, False)
 
@@ -136,6 +140,9 @@ class SimpleDynamicEnv(gym.Env):
     def _set_action(self, action):
         v_xy = action[0]
         yaw_rate = action[-1]
+
+        self.v_xy = v_xy
+        self.yaw_rate = yaw_rate
 
         self.yaw_rad += yaw_rate * self.dt
         if self.yaw_rad > math.radians(180):
@@ -205,6 +212,7 @@ class SimpleDynamicEnv(gym.Env):
         if not done:
             distance_now = self.get_distance_from_desired_point_3d()
             reward_distance = (self.previous_distance_from_des_point - distance_now)
+            self.previous_distance_from_des_point = distance_now
 
             reward_obs = 0
 

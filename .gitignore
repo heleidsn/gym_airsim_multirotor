@@ -1,2 +1,3 @@
 *.pyc 
 .vscode/settings.json
+gym_airsim_multirotor.egg-info/
