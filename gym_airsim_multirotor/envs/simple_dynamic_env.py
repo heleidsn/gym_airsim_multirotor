@@ -350,8 +350,8 @@ class SimpleDynamicEnv(gym.Env):
         @return: 
         '''
         # get relative angle
-        relative_pose_x = self.x - self.goal_position[0]
-        relative_pose_y = self.y - self.goal_position[1]
+        relative_pose_x = self.goal_position[0] - self.x
+        relative_pose_y = self.goal_position[1] - self.y
         angle = math.atan2(relative_pose_y, relative_pose_x)
 
         # get current yaw
