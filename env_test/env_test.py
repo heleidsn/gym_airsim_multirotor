@@ -1,6 +1,6 @@
 import gym
 import gym_airsim_multirotor
-from cv2 import getTickCount, getTickFrequency
+import time
 
 env = gym.make("airsim-simple-dynamics-v0")
 # env.read_config('gym_airsim_multirotor/envs/config.ini')
@@ -8,19 +8,21 @@ env = gym.make("airsim-simple-dynamics-v0")
 env.reset()
 
 step = 0
-loop_start = getTickCount()
-for i in range (100):
-    loop_start = getTickCount()
-    
+start_time = time.time()
+x = 1 # displays the frame rate every 1 second
+counter = 0
+
+for i in range (500):
     action = [5, 0]    
     obs, reward, done, info = env.step(action)
     step += 1
     
-    loop_time = getTickCount() - loop_start
-    total_time=loop_time/(getTickFrequency())
-    FPS=1/total_time
-    print(FPS)
+    counter+=1
+    if (time.time() - start_time) > x :
+        print("FPS: ", counter / (time.time() - start_time))
+        counter = 0
+        start_time = time.time()
 
-    if done:
-        env.reset()
-        print(info)
+    # if done:
+    #     env.reset()
+        # print(info)

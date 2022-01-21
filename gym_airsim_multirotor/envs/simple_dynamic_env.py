@@ -6,6 +6,7 @@ from gym import spaces
 import airsim
 from configparser import ConfigParser
 
+import torch as th
 import numpy as np
 import math
 import cv2
@@ -23,6 +24,9 @@ class SimpleDynamicEnv(gym.Env):
         # init airsim client
         self.client = airsim.VehicleClient()
         self.client.confirmConnection()
+        
+        # for stable baselines policy
+        self.model = None
 
         # UAV state
         self.x = x_init
@@ -38,7 +42,7 @@ class SimpleDynamicEnv(gym.Env):
         self.start_position = [x_init, y_init, z_init, yaw_rad_init]
         self.goal_angle_noise_degree = 180
         self.goal_position = np.zeros(3)
-        self.goal_distance = 70
+        self.goal_distance = 100
 
         # training state
         self.episode_num = 0
@@ -58,6 +62,8 @@ class SimpleDynamicEnv(gym.Env):
         self.max_vertical_difference = 5
 
         self.navigation_3d = False
+        self.control_acc = True
+        self.max_acc_xy = 5
         self.max_vel_x = 5
         self.min_vel_x = 1
         self.max_vel_z = 1
@@ -66,6 +72,8 @@ class SimpleDynamicEnv(gym.Env):
         self.screen_height = 80
         self.screen_width = 100
 
+        np.set_printoptions(formatter={'float': '{: 4.2f}'.format}, suppress=True)
+        th.set_printoptions(profile="short", sci_mode=False, linewidth=1000)
 
         self.observation_space = spaces.Box(low=0, high=255, \
                                             shape=(self.screen_height, self.screen_width, 2),\
@@ -78,9 +86,14 @@ class SimpleDynamicEnv(gym.Env):
                                             dtype=np.float32)
         else:
             self.state_feature_length = 4
-            self.action_space = spaces.Box(low=np.array([self.min_vel_x , -self.max_vel_yaw_rad]), \
-                                            high=np.array([self.max_vel_x, self.max_vel_yaw_rad]), \
-                                            dtype=np.float32)
+            if self.control_acc:
+                self.action_space = spaces.Box(low=np.array([-self.max_acc_xy, -self.max_vel_yaw_rad]), \
+                                               high=np.array([self.max_acc_xy, self.max_vel_yaw_rad]) 
+                                    )
+            else:
+                self.action_space = spaces.Box(low=np.array([self.min_vel_x , -self.max_vel_yaw_rad]), \
+                                                high=np.array([self.max_vel_x, self.max_vel_yaw_rad]), \
+                                                dtype=np.float32)
 
 
 
@@ -100,7 +113,7 @@ class SimpleDynamicEnv(gym.Env):
         reward = self._compute_reward(done, action)
         self.cumulated_episode_reward += reward
 
-        # print(self.episode_num, self.step_num, "{:.2f} {:.2f} {:.2f} {:.2f}".format(action[0], action[1], reward, self.cumulated_episode_reward), self.state_norm)
+        self._print_train_info(action, reward, info)
 
         self.step_num += 1
         self.total_step += 1
@@ -109,7 +122,7 @@ class SimpleDynamicEnv(gym.Env):
 
     def reset(self):
         # reset state
-        yaw_noise = math.radians(360) * np.random.random()
+        yaw_noise = math.radians(360) * np.random.random() - math.pi
         self.x = self.start_position[0]
         self.y = self.start_position[1]
         self.z = self.start_position[2]
@@ -138,7 +151,17 @@ class SimpleDynamicEnv(gym.Env):
         return obs
 
     def _set_action(self, action):
-        v_xy = action[0]
+
+        if self.control_acc:
+            acc_xy = action[0]
+            v_xy = self.v_xy + acc_xy * self.dt
+            if v_xy > self.max_vel_x:
+                v_xy = self.max_vel_x
+            elif v_xy < self.min_vel_x:
+                v_xy = self.min_vel_x
+        else:
+            v_xy = action[0]
+        
         yaw_rate = action[-1]
 
         self.v_xy = v_xy
@@ -216,7 +239,9 @@ class SimpleDynamicEnv(gym.Env):
 
             reward_obs = 0
 
-            action_cost = 0
+            # add yaw_rate cost
+            yaw_speed_cost = 0.2 * abs(action[-1]) / self.max_vel_yaw_rad
+            action_cost = yaw_speed_cost
 
             reward = reward_distance - reward_obs - action_cost
         else:
@@ -250,8 +275,6 @@ class SimpleDynamicEnv(gym.Env):
             airsim.ImageRequest("0", airsim.ImageType.DepthVis, True)
             ])
 
-        # depth_img = airsim.list_to_2d_float_array(responses[0].image_data_float, responses[0].width, responses[0].height)
-
         # check observation
         while responses[0].width == 0:
             print("get_image_fail...")
@@ -272,7 +295,7 @@ class SimpleDynamicEnv(gym.Env):
                     normalized state range 0-255
         '''
         distance = self._get_2d_distance_to_goal()
-        relative_yaw = self._get_relative_yaw()
+        relative_yaw = self._get_relative_yaw()  # return relative yaw -pi to pi 
         relative_pose_z = self.z - self.goal_position[2]  # current position z is positive
         vertical_distance_norm = (relative_pose_z / self.max_vertical_difference / 2 + 0.5) * 255
 
@@ -288,12 +311,12 @@ class SimpleDynamicEnv(gym.Env):
 
         if self.navigation_3d:
             # state: distance_h, distance_v, relative yaw, velocity_x, velocity_z, velocity_yaw
-            self.state_raw = np.array([distance, relative_pose_z, relative_yaw, linear_velocity_xy, linear_velocity_z, self.yaw_rate])
+            self.state_raw = np.array([distance, relative_pose_z,  math.degrees(relative_yaw), linear_velocity_xy, linear_velocity_z,  math.degrees(self.yaw_rate)])
             state_norm = np.array([distance_norm, vertical_distance_norm, relative_yaw_norm, linear_velocity_norm, linear_velocity_z_norm, angular_velocity_norm])
             state_norm = np.clip(state_norm, 0, 255)
             self.state_norm = state_norm
         else:
-            self.state_raw = np.array([distance, relative_yaw, linear_velocity_xy, self.yaw_rate])
+            self.state_raw = np.array([distance, math.degrees(relative_yaw), linear_velocity_xy,  math.degrees(self.yaw_rate)])
             state_norm = np.array([distance_norm, relative_yaw_norm, linear_velocity_norm, angular_velocity_norm])
             state_norm = np.clip(state_norm, 0, 255)
             self.state_norm = state_norm
@@ -369,6 +392,18 @@ class SimpleDynamicEnv(gym.Env):
         collision_info = self.client.simGetCollisionInfo()
         if collision_info.has_collided or self.min_distance_to_obstacles < self.distance_to_obstacles_accept:
             is_crashed = True
-            print('crashed')
 
         return is_crashed
+
+    def _print_train_info(self, action, reward, info):
+        feature_all = self.model.actor.features_extractor.feature_all
+        self.client.simPrintLogMessage('feature_all: ', str(feature_all))
+        msg_train_info = "EP: {} Step: {} Total_step: {}".format(self.episode_num, self.step_num, self.total_step)
+
+        self.client.simPrintLogMessage('Train: ', msg_train_info)
+        self.client.simPrintLogMessage('Action: ', str(action))
+        self.client.simPrintLogMessage('reward: ', "{:4.4f} total: {:4.4f}".format(reward, self.cumulated_episode_reward))
+        self.client.simPrintLogMessage('Info: ', str(info))
+        self.client.simPrintLogMessage('Feature_all: ', str(feature_all))
+        self.client.simPrintLogMessage('Feature_norm: ', str(self.state_norm))
+        self.client.simPrintLogMessage('Feature_raw: ', str(self.state_raw))
