@@ -10,3 +10,8 @@ register(
     id = 'airsim-simple-dynamics-v0',
     entry_point = 'gym_airsim_multirotor.envs:SimpleDynamicEnv'
 )
+
+register(
+    id = 'airsim-env-v0',
+    entry_point = 'gym_airsim_multirotor.envs:AirsimGymEnv'
+)

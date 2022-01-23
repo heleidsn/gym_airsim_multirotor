@@ -1,6 +1,3 @@
-from msilib.schema import Class
-from os import curdir
-from turtle import position
 import gym
 from gym import spaces
 import airsim
@@ -13,8 +10,8 @@ import cv2
 
 class SimpleDynamicEnv(gym.Env):
     def __init__(self, 
-                 x_init=0, 
-                 y_init=0, 
+                 x_init=110, 
+                 y_init=180, 
                  z_init=5, 
                  yaw_rad_init=0, 
                  dt=0.1) -> None:
@@ -40,9 +37,9 @@ class SimpleDynamicEnv(gym.Env):
 
         # goal
         self.start_position = [x_init, y_init, z_init, yaw_rad_init]
-        self.goal_angle_noise_degree = 180
+        self.goal_angle_noise_degree = 0
         self.goal_position = np.zeros(3)
-        self.goal_distance = 100
+        self.goal_distance = 90
 
         # training state
         self.episode_num = 0
@@ -61,12 +58,12 @@ class SimpleDynamicEnv(gym.Env):
         self.work_space_z_min = 0.5
         self.max_vertical_difference = 5
 
-        self.navigation_3d = False
+        self.navigation_3d = True
         self.control_acc = True
         self.max_acc_xy = 5
         self.max_vel_x = 5
         self.min_vel_x = 1
-        self.max_vel_z = 1
+        self.max_vel_z = 2
         self.max_vel_yaw_deg = 50
         self.max_vel_yaw_rad = math.radians(self.max_vel_yaw_deg)
         self.screen_height = 80
@@ -108,8 +105,12 @@ class SimpleDynamicEnv(gym.Env):
             'is_success': self.is_in_desired_pose(),
             # 'is_crash': self.is_crashed() or not self.is_inside_workspace(),
             'is_crash': self.is_crashed(),
+            'is_in_workspace': self.is_inside_workspace_rectangle(),
             'step_num': self.step_num
         }
+        if done:
+            print(info)
+        
         reward = self._compute_reward(done, action)
         self.cumulated_episode_reward += reward
 
@@ -122,7 +123,8 @@ class SimpleDynamicEnv(gym.Env):
 
     def reset(self):
         # reset state
-        yaw_noise = math.radians(360) * np.random.random() - math.pi
+        # yaw_noise = math.radians(360) * np.random.random() - math.pi
+        yaw_noise = 0
         self.x = self.start_position[0]
         self.y = self.start_position[1]
         self.z = self.start_position[2]
@@ -178,6 +180,7 @@ class SimpleDynamicEnv(gym.Env):
 
         if len(action) == 3:
             self.z += action[1] * self.dt
+            self.v_z = action[1]
 
         position = [self.x, self.y, self.z]
         pose = self.client.simGetVehiclePose()
@@ -239,9 +242,23 @@ class SimpleDynamicEnv(gym.Env):
 
             reward_obs = 0
 
+            action_cost = 0
+
             # add yaw_rate cost
             yaw_speed_cost = 0.2 * abs(action[-1]) / self.max_vel_yaw_rad
-            action_cost = yaw_speed_cost
+
+            if self.control_acc:
+                acc_cost = 0.2 * abs(action[0]) / self.max_acc_xy
+                action_cost += acc_cost
+
+            if self.navigation_3d:
+                v_z_cost = 0.2 * abs(action[1]) / self.max_vel_z
+                action_cost += v_z_cost
+            
+            action_cost += yaw_speed_cost
+
+            # y_cost = 0
+            # y_cost = 0.2 * abs(self.y - self.start_position[1])
 
             reward = reward_distance - reward_obs - action_cost
         else:
@@ -255,7 +272,7 @@ class SimpleDynamicEnv(gym.Env):
     def _is_done(self):
         episode_done = False
 
-        is_inside_workspace_now = self.is_inside_workspace()
+        is_inside_workspace_now = self.is_inside_workspace_rectangle()
         has_reached_des_pose    = self.is_in_desired_pose()
         too_close_to_obstable   = self.is_crashed()
 
@@ -327,11 +344,12 @@ class SimpleDynamicEnv(gym.Env):
         distance = self.goal_distance
         noise = np.random.random() * 2 - 1
         angle = noise * math.radians(self.goal_angle_noise_degree)
-        goal_x = distance * math.cos(angle)
-        goal_y = distance * math.sin(angle)
+        goal_x = distance * math.cos(angle) + self.start_position[0]
+        goal_y = distance * math.sin(angle) + self.start_position[1]
         goal_z = 5
 
         self.goal_position = np.array([goal_x, goal_y, goal_z])
+        print(self.goal_position)
 
     def _get_2d_distance_to_goal(self):
         current_pose = np.array([self.x, self.y, self.z])
@@ -378,6 +396,26 @@ class SimpleDynamicEnv(gym.Env):
                                                current_position[2] < self.work_space_z_min:
             is_inside = False
 
+        return is_inside
+
+    def is_inside_workspace_rectangle(self):
+        is_inside = True
+
+        current_position = [self.x, self.y, self.z]
+        goal_position = self.goal_position
+        start_position = self.start_position
+
+        bias_max_x = 10
+        bias_max_y = 40
+
+        if current_position[0] < min(self.start_position[0], self.goal_position[0]) - bias_max_x or \
+            current_position[0] > max(self.start_position[0], self.goal_position[0]) + bias_max_x or \
+            current_position[1] < min(self.start_position[1], self.goal_position[1]) - bias_max_y or \
+            current_position[1] > max(self.start_position[1], self.goal_position[1]) + bias_max_y or \
+                                            current_position[2] > self.work_space_z_max or \
+                                               current_position[2] < self.work_space_z_min:
+            is_inside = False
+            
         return is_inside
 
     def is_in_desired_pose(self):
