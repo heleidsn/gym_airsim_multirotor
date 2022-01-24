@@ -121,7 +121,7 @@ class MultirotorDynamics():
             #                                 drivetrain=airsim.DrivetrainType.ForwardOnly,
             #                                 yaw_mode=airsim.YawMode(is_rate=False, yaw_or_rate=math.degrees(0))).join()
         elif len(action) == 3:
-            vz_local_sp = action[1]
+            vz_local_sp = float(action[1])
             self.client.moveByVelocityAsync(vx_local_sp, vy_local_sp, -vz_local_sp, self.dt,
                                             drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
                                             yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=math.degrees(yaw_rate_sp))).join()
