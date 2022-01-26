@@ -202,9 +202,8 @@ class AirsimGymEnv(gym.Env):
         # check observation
         while responses[0].width == 0:
             print("get_image_fail...")
-            responses = self.client.simGetImages([
-                airsim.ImageRequest("0", airsim.ImageType.DepthVis)
-                ])
+            responses = self.client.simGetImages(
+                airsim.ImageRequest("0", airsim.ImageType.DepthVis, True))
 
         depth_img = airsim.list_to_2d_float_array(responses[0].image_data_float, responses[0].width, responses[0].height)
 

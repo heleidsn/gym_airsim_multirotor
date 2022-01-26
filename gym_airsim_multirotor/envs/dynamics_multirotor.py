@@ -2,7 +2,6 @@ import airsim
 import numpy as np
 import math
 from gym import spaces
-from sympy import li
 
 class MultirotorDynamics():
     '''
