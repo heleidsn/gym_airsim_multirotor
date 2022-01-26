@@ -2,7 +2,6 @@ import airsim
 import numpy as np
 import math
 from gym import spaces
-from sympy import li
 
 class MultirotorDynamics():
     '''
@@ -30,15 +29,7 @@ class MultirotorDynamics():
         self.goal_distance = None
         self.goal_random_angle = None
         
-        # states
-        self.x = 0
-        self.y = 0
-        self.z = 0
-        self.v_xy = 0
-        self.v_z = 0
-        self.yaw = 0
-        self.yaw_rate = 0
-
+        # action space
         self.max_acc_xy = 2.0
         self.max_vel_x = 5.0
         self.min_vel_x = 1.0
