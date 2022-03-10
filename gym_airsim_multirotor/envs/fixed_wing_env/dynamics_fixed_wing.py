@@ -1,7 +1,11 @@
+import imp
 import airsim
 import numpy as np
 import math
 from gym import spaces
+
+# from FWAirsim import ClosedLoop
+import FWAirsim
 
 class FixedWingDynamics():
     def __init__(self) -> None:
@@ -9,6 +13,9 @@ class FixedWingDynamics():
         # config: 3 settings 最简单的是只控制roll角度，然后搭配爬升率，最后配上速度控制
         self.control_mode = 1
         self.dt = 0.1
+
+        # 连接fixed wing simulator
+        self.fixed_wing_sim = None
 
         # AirSim Client
         self.client = airsim.VehicleClient()

@@ -1,7 +1,0 @@
-README.md
-setup.py
-gym_airsim_multirotor.egg-info/PKG-INFO
-gym_airsim_multirotor.egg-info/SOURCES.txt
-gym_airsim_multirotor.egg-info/dependency_links.txt
-gym_airsim_multirotor.egg-info/requires.txt
-gym_airsim_multirotor.egg-info/top_level.txt

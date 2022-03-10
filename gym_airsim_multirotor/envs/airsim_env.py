@@ -1,5 +1,6 @@
 from random import random
 from tracemalloc import start
+from webbrowser import Elinks
 import gym
 from gym import spaces
 import airsim
@@ -12,17 +13,44 @@ import cv2
 
 from .dynamics_simple import SimpleDynamics
 from .dynamics_multirotor import MultirotorDynamics
+from .dynamics_simple_fixedwing import SimpleDynamicsFixedwing
 
-class AirsimGymEnv(gym.Env):
+from PyQt5 import QtCore
+from PyQt5.QtCore import pyqtSignal
+
+class AirsimGymEnv(gym.Env, QtCore.QThread):
+
+    action_signal = pyqtSignal(int, np.ndarray, np.ndarray) # action(cmd: [roll, pitch, yaw, airspeed]), state(real: [roll, pitch, yaw, airspeed])
+    state_signal = pyqtSignal(int, np.ndarray) # state_raw
+    state_norm_signal = pyqtSignal(int, np.ndarray)
+    reward_signal = pyqtSignal(int, float, float) # step_reward, total_reward
+    depth_image_signal = pyqtSignal(np.ndarray) # depth_image
+    feature_signal = pyqtSignal(np.ndarray)
+
+    # signals for shap explain
+    training_info_signal = pyqtSignal(int, int, int, float, float, bool)  # episode, timestep, total timestep, reward, accumulate reward, done
+    state_raw_norm_signal = pyqtSignal(np.ndarray, np.ndarray) # raw and norm state
+
+    pose_signal = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # goal_pose current_pose trajectory
+
     def __init__(self) -> None:
         super().__init__()
 
-        # select dynamics models
-        self.dynamic_model = MultirotorDynamics()
+        # 需要设置：
+        #   1. 选择动力学模型
+        #   2. 选择训练环境
+        self.env_name = 'City'
+        self.dynamic_name = 'SimpleFixedwing'
 
-        env_name = 'NH'
-        # set start and goal position
-        if env_name == 'NH':
+        if self.dynamic_name == 'SimpleFixedwing':
+            self.dynamic_model = SimpleDynamicsFixedwing()
+        elif self.dynamic_name == 'SimpleMultirotor':
+            self.dynamic_model = SimpleDynamics()
+        elif self.dynamic_name == 'Multirotor':
+            self.dynamic_model = MultirotorDynamics()
+
+        # set start and goal position according to different environment
+        if self.env_name == 'NH':
             start_position = [110, 180, 5]
             goal_distance = 90
             self.dynamic_model.set_start(start_position, random_angle=0)
@@ -30,6 +58,14 @@ class AirsimGymEnv(gym.Env):
             self.work_space_x = [start_position[0], start_position[0] + goal_distance + 10]
             self.work_space_y = [start_position[1] - 30, start_position[1] + 30]
             self.work_space_z = [0.5, 10]
+        elif self.env_name == 'City':
+            start_position = [40, -30, 40]
+            goal_position = [280, -200, 40]
+            self.dynamic_model.set_start(start_position, random_angle=0)
+            self.dynamic_model._set_goal_pose_single(goal_position)
+            self.work_space_x = [-100, 350]
+            self.work_space_y = [-300, 100]
+            self.work_space_z = [0, 100]
         else:
             start_position = [0, 0, 5]
             goal_distance = 90
@@ -51,11 +87,13 @@ class AirsimGymEnv(gym.Env):
 
         # other settings
         self.distance_to_obstacles_accept = 2
-        self.accept_radius = 2
+        self.accept_radius = 5
         self.max_episode_steps = 600
 
         self.screen_height = 80
         self.screen_width = 100
+
+        self.trajectory_list = []
 
         np.set_printoptions(formatter={'float': '{: 4.2f}'.format}, suppress=True)
         th.set_printoptions(profile="short", sci_mode=False, linewidth=1000)
@@ -68,7 +106,9 @@ class AirsimGymEnv(gym.Env):
 
     def step(self, action):
         # set action
-        self._set_action(action)
+        self.dynamic_model.set_action(action)
+
+        self.trajectory_list.append(self.dynamic_model.get_position())
 
         # get new obs
         obs = self._get_obs()
@@ -82,10 +122,14 @@ class AirsimGymEnv(gym.Env):
         if done:
             print(info)
         
-        reward = self._compute_reward(done, action)
+        if self.dynamic_name == 'SimpleFixedwing':
+            reward = self._compute_reward_fixedwing(done, action)
+        else:
+            reward = self._compute_reward(done, action)
         self.cumulated_episode_reward += reward
 
         self._print_train_info(action, reward, info)
+        self.set_pyqt_signal_for_plot(action, reward, done)
 
         self.step_num += 1
         self.total_step += 1
@@ -99,15 +143,14 @@ class AirsimGymEnv(gym.Env):
         self.episode_num += 1
         self.step_num = 0
         self.cumulated_episode_reward = 0
+        self.dynamic_model.goal_distance = self.dynamic_model._get_2d_distance_to_goal()
         self.previous_distance_from_des_point = self.dynamic_model.goal_distance
+
+        self.trajectory_list = []
 
         obs = self._get_obs()
 
         return obs
-
-    def _set_action(self, action):
-
-        self.dynamic_model.set_action(action)
 
     def _get_obs(self):
         '''
@@ -168,6 +211,35 @@ class AirsimGymEnv(gym.Env):
             action_cost += yaw_speed_cost
 
             reward = reward_distance - reward_obs - action_cost
+        else:
+            if self.is_in_desired_pose():
+                reward = reward_reach
+            if self.is_crashed():
+                reward = reward_crash
+            if self.is_not_inside_workspace():
+                reward = reward_outside
+
+        return reward
+
+    def _compute_reward_fixedwing(self, done, action):
+        reward = 0
+        reward_reach = 10
+        reward_crash = -10
+        reward_outside = -10
+
+        if not done:
+            distance_now = self.get_distance_to_goal_3d()
+            reward_distance = (self.previous_distance_from_des_point - distance_now)
+            self.previous_distance_from_des_point = distance_now
+
+            state_cost = 0
+            action_cost = 0
+
+            state_cost += 0.2 * abs(self.dynamic_model.roll) / self.dynamic_model.roll_max
+
+            action_cost += 0.2 * abs(action[0]) /self.dynamic_model.roll_rate_max
+
+            reward = reward_distance - state_cost - action_cost
         else:
             if self.is_in_desired_pose():
                 reward = reward_reach
@@ -259,3 +331,21 @@ class AirsimGymEnv(gym.Env):
         self.client.simPrintLogMessage('Feature_all: ', str(feature_all))
         self.client.simPrintLogMessage('Feature_norm: ', str(self.dynamic_model.state_norm))
         self.client.simPrintLogMessage('Feature_raw: ', str(self.dynamic_model.state_raw))
+
+    def set_pyqt_signal_for_plot(self, action, reward, done):
+        """
+        emit signals for pyqt plot
+        """
+        action_plot = np.array([math.degrees(action[0]), 0, 0, 0])
+        euler_angle = self.dynamic_model.get_attitude() # pitch, roll yaw
+        state_plot = np.array([math.degrees(euler_angle[0]), math.degrees(euler_angle[1]), math.degrees(euler_angle[2]), self.dynamic_model.v_xy])
+
+        self.action_signal.emit(int(self.total_step), action_plot, state_plot)
+        self.state_signal.emit(int(self.total_step), self.dynamic_model.state_raw)
+        self.state_norm_signal.emit(int(self.total_step), self.dynamic_model.state_norm)
+        self.reward_signal.emit(int(self.total_step), reward, self.cumulated_episode_reward)
+
+        # emit signals for shap explain
+        self.training_info_signal.emit(self.episode_num, self.step_num, self.total_step, reward, self.cumulated_episode_reward, done) # episode, timestep, total timestep, reward, accumulate reward, done
+        self.state_raw_norm_signal.emit(self.dynamic_model.state_raw, self.dynamic_model.state_norm)
+        self.pose_signal.emit(np.asarray(self.dynamic_model.goal_position), np.asarray(self.dynamic_model.start_position), np.asarray(self.dynamic_model.get_position()), np.asarray(self.trajectory_list))
